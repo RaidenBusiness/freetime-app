@@ -5,6 +5,9 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 async function sbFetch(path, options = {}) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error("App configuration missing. Please contact support.");
+  }
   const session = JSON.parse(localStorage.getItem("sb_session") || "null");
   const headers = {
     "Content-Type": "application/json",
@@ -12,13 +15,18 @@ async function sbFetch(path, options = {}) {
     "Authorization": `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
     ...options.headers,
   };
-  const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || err.error_description || "Request failed");
+  try {
+    const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      throw new Error(json.error_description || json.msg || json.message || json.error || `Error ${res.status}`);
+    }
+    return json;
+  } catch (e) {
+    if (e.message.startsWith("Error ") || e.message.includes("configuration")) throw e;
+    throw new Error("Network error — check your connection and try again.");
   }
-  const text = await res.text();
-  return text ? JSON.parse(text) : {};
 }
 
 async function authSignUp(email, password, name) {
