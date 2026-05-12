@@ -1,9 +1,11 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
 async function sbFetch(path, options = {}) {
   const { data: { session } } = await supabase.auth.getSession();
@@ -91,6 +93,7 @@ export default function FreeTime() {
 
   // Check for existing session on mount
   useEffect(() => {
+    if (!supabase) return;
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         const name = session.user.user_metadata?.name || session.user.email.split("@")[0];
@@ -138,6 +141,7 @@ export default function FreeTime() {
 
   async function handleAuth() {
     setAuthError("");
+    if (!supabase) { setAuthError("App not configured. Please add environment variables in Vercel."); return; }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
     if (!authEmail.trim() || !authPassword.trim()) { setAuthError("Please fill in all fields."); return; }
     if (!emailRegex.test(authEmail.trim())) { setAuthError("Please enter a valid email address."); return; }
