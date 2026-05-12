@@ -109,6 +109,8 @@ export default function FreeTime() {
   const [authLoading, setAuthLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [dataLoading, setDataLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [signupDone, setSignupDone] = useState(false);
 
   // Check for existing session on mount
   useEffect(() => {
@@ -156,25 +158,32 @@ export default function FreeTime() {
     if (authPassword.length < 6) { setAuthError("Password must be at least 6 characters."); return; }
     setAuthLoading(true);
     try {
-      let session;
       if (authMode === "signup") {
         const data = await authSignUp(authEmail.trim(), authPassword, authName.trim());
-        if (data.error) throw new Error(data.error_description || data.error);
-        // After signup, sign in to get session
-        session = await authSignIn(authEmail.trim(), authPassword);
+        if (data.error || data.error_description) throw new Error(data.error_description || data.msg || data.error || "Signup failed");
+        // Email confirmation is on — show confirmation screen instead of auto sign-in
+        setSignupDone(true);
       } else {
-        session = await authSignIn(authEmail.trim(), authPassword);
+        const session = await authSignIn(authEmail.trim(), authPassword);
+        if (session.error || session.error_description) throw new Error(session.error_description || session.msg || session.error || "Login failed");
+        if (keepSignedIn) localStorage.setItem("sb_session", JSON.stringify(session));
+        else sessionStorage.setItem("sb_session", JSON.stringify(session));
+        localStorage.setItem("sb_session", JSON.stringify(session));
+        const name = session.user?.user_metadata?.name || authEmail.split("@")[0];
+        setCurrentUser({ name, email: session.user.email, id: session.user.id });
+        setAuthed(true);
       }
-      if (session.error) throw new Error(session.error_description || session.error);
-      if (keepSignedIn) localStorage.setItem("sb_session", JSON.stringify(session));
-      else sessionStorage.setItem("sb_session", JSON.stringify(session));
-      // Also always store in localStorage for sbFetch header use
-      localStorage.setItem("sb_session", JSON.stringify(session));
-      const name = session.user?.user_metadata?.name || authEmail.split("@")[0];
-      setCurrentUser({ name, email: session.user.email, id: session.user.id });
-      setAuthed(true);
     } catch (e) {
-      setAuthError(e.message || "Something went wrong. Please try again.");
+      const msg = e.message || "";
+      if (msg.toLowerCase().includes("email not confirmed")) {
+        setAuthError("Please confirm your email before logging in. Check your inbox.");
+      } else if (msg.toLowerCase().includes("invalid login")) {
+        setAuthError("Incorrect email or password.");
+      } else if (msg.toLowerCase().includes("already registered") || msg.toLowerCase().includes("already exists")) {
+        setAuthError("An account with this email already exists. Try logging in.");
+      } else {
+        setAuthError(msg || "Something went wrong. Please try again.");
+      }
     }
     setAuthLoading(false);
   }
@@ -694,78 +703,109 @@ export default function FreeTime() {
         <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
         <div style={aStyles.root}>
           <div style={aStyles.card}>
-            {/* Logo + hero */}
-            <div style={{ textAlign: "center", marginBottom: 40, paddingTop: 40 }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>⏳</div>
-              <div style={aStyles.logo}>FreeTime</div>
-              <div style={aStyles.tagline}>{authMode === "login" ? "Welcome back" : "Take back your time"}</div>
-              <div style={aStyles.sub}>{authMode === "login" ? "Sign in to your account" : "Create your free account and start planning"}</div>
-            </div>
 
-            {/* Login / Sign up toggle */}
-            <div style={aStyles.tabRow}>
-              <button style={aStyles.tabBtn(authMode === "login")} onClick={() => { setAuthMode("login"); setAuthError(""); }}>Log in</button>
-              <button style={aStyles.tabBtn(authMode === "signup")} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>Sign up</button>
-            </div>
-
-            {/* Fields */}
-            {authMode === "signup" && (
-              <div style={aStyles.fieldWrap}>
-                <label style={aStyles.label}>Your name</label>
-                <input style={aStyles.input} placeholder="Alex" value={authName}
-                  onChange={e => setAuthName(e.target.value)} />
+            {/* Email confirmation screen */}
+            {signupDone ? (
+              <div style={{ textAlign: "center", paddingTop: 80 }}>
+                <div style={{ fontSize: 64, marginBottom: 20 }}>📬</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", marginBottom: 10 }}>Check your email</div>
+                <div style={{ fontSize: 14, color: "#6b6b8a", lineHeight: 1.6, marginBottom: 32 }}>
+                  We sent a confirmation link to{" "}
+                  <span style={{ color: "#f59e0b", fontWeight: 600 }}>{authEmail}</span>.
+                  {"\n"}Click it to activate your account, then come back here to log in.
+                </div>
+                <button style={aStyles.submitBtn} onClick={() => { setSignupDone(false); setAuthMode("login"); setAuthPassword(""); setAuthError(""); }}>
+                  Back to log in
+                </button>
+                <div style={{ fontSize: 12, color: "#3a3a5a", marginTop: 16 }}>
+                  Didn't get it? Check your spam folder.
+                </div>
               </div>
+            ) : (
+              <>
+                {/* Logo + hero */}
+                <div style={{ textAlign: "center", marginBottom: 40, paddingTop: 40 }}>
+                  <div style={{ fontSize: 48, marginBottom: 12 }}>⏳</div>
+                  <div style={aStyles.logo}>FreeTime</div>
+                  <div style={aStyles.tagline}>{authMode === "login" ? "Welcome back" : "Take back your time"}</div>
+                  <div style={aStyles.sub}>{authMode === "login" ? "Sign in to your account" : "Create your free account and start planning"}</div>
+                </div>
+
+                {/* Login / Sign up toggle */}
+                <div style={aStyles.tabRow}>
+                  <button style={aStyles.tabBtn(authMode === "login")} onClick={() => { setAuthMode("login"); setAuthError(""); }}>Log in</button>
+                  <button style={aStyles.tabBtn(authMode === "signup")} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>Sign up</button>
+                </div>
+
+                {/* Fields */}
+                {authMode === "signup" && (
+                  <div style={aStyles.fieldWrap}>
+                    <label style={aStyles.label}>Your name</label>
+                    <input style={aStyles.input} placeholder="Alex" value={authName}
+                      onChange={e => setAuthName(e.target.value)} />
+                  </div>
+                )}
+                <div style={aStyles.fieldWrap}>
+                  <label style={aStyles.label}>Email</label>
+                  <input style={aStyles.input} type="email" placeholder="you@email.com" value={authEmail}
+                    onChange={e => setAuthEmail(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handleAuth()} />
+                </div>
+                <div style={{ ...aStyles.fieldWrap, marginBottom: 18 }}>
+                  <label style={aStyles.label}>Password</label>
+                  <div style={{ position: "relative" }}>
+                    <input style={{ ...aStyles.input, paddingRight: 48 }}
+                      type={showPassword ? "text" : "password"}
+                      placeholder="••••••••" value={authPassword}
+                      onChange={e => setAuthPassword(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && handleAuth()} />
+                    <button
+                      onClick={() => setShowPassword(s => !s)}
+                      style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, lineHeight: 1, color: showPassword ? "#f59e0b" : "#3a3a5a", padding: 0 }}>
+                      {showPassword ? "🙈" : "👁"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Keep me signed in */}
+                <div style={aStyles.keepRow} onClick={() => setKeepSignedIn(k => !k)}>
+                  <div style={aStyles.checkbox(keepSignedIn)}>
+                    {keepSignedIn && <span style={{ fontSize: 13, fontWeight: 900, color: "#0d0d14" }}>✓</span>}
+                  </div>
+                  <span style={{ fontSize: 13, color: keepSignedIn ? "#fff" : "#4a4a6a", userSelect: "none" }}>Keep me signed in</span>
+                </div>
+
+                {/* Error */}
+                <div style={aStyles.error}>{authError}</div>
+
+                {/* Submit */}
+                <button style={{ ...aStyles.submitBtn, opacity: authLoading ? 0.6 : 1 }} onClick={handleAuth} disabled={authLoading}>
+                  {authLoading ? "Please wait..." : authMode === "login" ? "Log in" : "Create account"}
+                </button>
+
+                {/* Divider */}
+                <div style={aStyles.divider}>
+                  <div style={aStyles.divLine} />
+                  <span style={aStyles.divText}>OR</span>
+                  <div style={aStyles.divLine} />
+                </div>
+
+                {/* Continue as guest */}
+                <button style={{ ...aStyles.submitBtn, background: "#13131f", color: "#9090aa", border: "1px solid #1e1e2e", marginBottom: 20 }}
+                  onClick={() => { setCurrentUser({ name: "Guest", email: "", id: null }); setAuthed(true); }}>
+                  Continue as guest
+                </button>
+
+                {/* Switch mode */}
+                <div style={aStyles.switchTxt}>
+                  {authMode === "login" ? (
+                    <>Don't have an account? <button style={aStyles.switchLink} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>Sign up free</button></>
+                  ) : (
+                    <>Already have an account? <button style={aStyles.switchLink} onClick={() => { setAuthMode("login"); setAuthError(""); }}>Log in</button></>
+                  )}
+                </div>
+              </>
             )}
-            <div style={aStyles.fieldWrap}>
-              <label style={aStyles.label}>Email</label>
-              <input style={aStyles.input} type="email" placeholder="you@email.com" value={authEmail}
-                onChange={e => setAuthEmail(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleAuth()} />
-            </div>
-            <div style={{ ...aStyles.fieldWrap, marginBottom: 18 }}>
-              <label style={aStyles.label}>Password</label>
-              <input style={aStyles.input} type="password" placeholder="••••••••" value={authPassword}
-                onChange={e => setAuthPassword(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleAuth()} />
-            </div>
-
-            {/* Keep me signed in */}
-            <div style={aStyles.keepRow} onClick={() => setKeepSignedIn(k => !k)}>
-              <div style={aStyles.checkbox(keepSignedIn)}>
-                {keepSignedIn && <span style={{ fontSize: 13, fontWeight: 900, color: "#0d0d14" }}>✓</span>}
-              </div>
-              <span style={{ fontSize: 13, color: keepSignedIn ? "#fff" : "#4a4a6a", userSelect: "none" }}>Keep me signed in</span>
-            </div>
-
-            {/* Error */}
-            <div style={aStyles.error}>{authError}</div>
-
-            {/* Submit */}
-            <button style={aStyles.submitBtn} onClick={handleAuth}>
-              {authMode === "login" ? "Log in" : "Create account"}
-            </button>
-
-            {/* Divider */}
-            <div style={aStyles.divider}>
-              <div style={aStyles.divLine} />
-              <span style={aStyles.divText}>OR</span>
-              <div style={aStyles.divLine} />
-            </div>
-
-            {/* Continue as guest */}
-            <button style={{ ...aStyles.submitBtn, background: "#13131f", color: "#9090aa", border: "1px solid #1e1e2e", marginBottom: 20 }}
-              onClick={() => { setCurrentUser({ name: "Guest", email: "" }); setAuthed(true); }}>
-              Continue as guest
-            </button>
-
-            {/* Switch mode */}
-            <div style={aStyles.switchTxt}>
-              {authMode === "login" ? (
-                <>Don't have an account? <button style={aStyles.switchLink} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>Sign up free</button></>
-              ) : (
-                <>Already have an account? <button style={aStyles.switchLink} onClick={() => { setAuthMode("login"); setAuthError(""); }}>Log in</button></>
-              )}
-            </div>
           </div>
         </div>
       </>
