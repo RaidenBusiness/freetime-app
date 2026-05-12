@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 
 // Supabase client (inline, no install needed via CDN)
-const SUPABASE_URL = "https://ksnuptmbfllkvqxvicno.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtzbnVwdG1iZmxsa3ZxeHZpY25vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MjA4NjUsImV4cCI6MjA5Mzk5Njg2NX0.lg2lACWn83sy4Hmb_gVWNdXyOnwOujY0UeX94-p_Dm4";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 async function sbFetch(path, options = {}) {
   const session = JSON.parse(localStorage.getItem("sb_session") || "null");
