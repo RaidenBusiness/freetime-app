@@ -1,55 +1,24 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-// Supabase client (inline, no install needed via CDN)
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 async function sbFetch(path, options = {}) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error("App configuration missing. Please contact support.");
-  }
-  const session = JSON.parse(localStorage.getItem("sb_session") || "null");
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token || SUPABASE_ANON_KEY;
   const headers = {
     "Content-Type": "application/json",
     "apikey": SUPABASE_ANON_KEY,
-    "Authorization": `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
+    "Authorization": `Bearer ${token}`,
     ...options.headers,
   };
-  try {
-    const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
-    const text = await res.text();
-    const json = text ? JSON.parse(text) : {};
-    if (!res.ok) {
-      throw new Error(json.error_description || json.msg || json.message || json.error || `Error ${res.status}`);
-    }
-    return json;
-  } catch (e) {
-    if (e.message.startsWith("Error ") || e.message.includes("configuration")) throw e;
-    throw new Error("Network error — check your connection and try again.");
-  }
-}
-
-async function authSignUp(email, password, name) {
-  const data = await sbFetch("/auth/v1/signup", {
-    method: "POST",
-    body: JSON.stringify({ email, password, data: { name } }),
-  });
-  return data;
-}
-
-async function authSignIn(email, password) {
-  const data = await sbFetch("/auth/v1/token?grant_type=password", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-  return data;
-}
-
-async function authSignOut(token) {
-  await sbFetch("/auth/v1/logout", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) throw new Error(json.error_description || json.msg || json.message || json.error || `Error ${res.status}`);
+  return json;
 }
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -122,11 +91,21 @@ export default function FreeTime() {
 
   // Check for existing session on mount
   useEffect(() => {
-    const session = JSON.parse(localStorage.getItem("sb_session") || "null");
-    if (session?.access_token && session?.user) {
-      setCurrentUser({ name: session.user.user_metadata?.name || session.user.email.split("@")[0], email: session.user.email, id: session.user.id });
-      setAuthed(true);
-    }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        const name = session.user.user_metadata?.name || session.user.email.split("@")[0];
+        setCurrentUser({ name, email: session.user.email, id: session.user.id });
+        setAuthed(true);
+      }
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        const name = session.user.user_metadata?.name || session.user.email.split("@")[0];
+        setCurrentUser({ name, email: session.user.email, id: session.user.id });
+        setAuthed(true);
+      }
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   // Load user data when authed
@@ -167,40 +146,40 @@ export default function FreeTime() {
     setAuthLoading(true);
     try {
       if (authMode === "signup") {
-        const data = await authSignUp(authEmail.trim(), authPassword, authName.trim());
-        if (data.error || data.error_description) throw new Error(data.error_description || data.msg || data.error || "Signup failed");
-        // Email confirmation is on — show confirmation screen instead of auto sign-in
+        const { error } = await supabase.auth.signUp({
+          email: authEmail.trim(),
+          password: authPassword,
+          options: { data: { name: authName.trim() } },
+        });
+        if (error) throw error;
         setSignupDone(true);
       } else {
-        const session = await authSignIn(authEmail.trim(), authPassword);
-        if (session.error || session.error_description) throw new Error(session.error_description || session.msg || session.error || "Login failed");
-        if (keepSignedIn) localStorage.setItem("sb_session", JSON.stringify(session));
-        else sessionStorage.setItem("sb_session", JSON.stringify(session));
-        localStorage.setItem("sb_session", JSON.stringify(session));
-        const name = session.user?.user_metadata?.name || authEmail.split("@")[0];
-        setCurrentUser({ name, email: session.user.email, id: session.user.id });
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        const name = data.user?.user_metadata?.name || authEmail.split("@")[0];
+        setCurrentUser({ name, email: data.user.email, id: data.user.id });
         setAuthed(true);
       }
     } catch (e) {
-      const msg = e.message || "";
-      if (msg.toLowerCase().includes("email not confirmed")) {
+      const msg = (e.message || "").toLowerCase();
+      if (msg.includes("email not confirmed")) {
         setAuthError("Please confirm your email before logging in. Check your inbox.");
-      } else if (msg.toLowerCase().includes("invalid login")) {
+      } else if (msg.includes("invalid login") || msg.includes("invalid credentials")) {
         setAuthError("Incorrect email or password.");
-      } else if (msg.toLowerCase().includes("already registered") || msg.toLowerCase().includes("already exists")) {
+      } else if (msg.includes("already registered") || msg.includes("already exists") || msg.includes("user already")) {
         setAuthError("An account with this email already exists. Try logging in.");
       } else {
-        setAuthError(msg || "Something went wrong. Please try again.");
+        setAuthError(e.message || "Something went wrong. Please try again.");
       }
     }
     setAuthLoading(false);
   }
 
   async function handleSignOut() {
-    const session = JSON.parse(localStorage.getItem("sb_session") || "null");
-    if (session?.access_token) await authSignOut(session.access_token).catch(() => {});
-    localStorage.removeItem("sb_session");
-    sessionStorage.removeItem("sb_session");
+    await supabase.auth.signOut();
     setAuthed(false);
     setCurrentUser(null);
     setShifts(initialShifts);
