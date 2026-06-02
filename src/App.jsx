@@ -369,7 +369,7 @@ export default function FreeTime() {
   }
     {
       icon:"👋",
-      title:`Welcome, ${user?.name?.split(" ")[0]||""}!`,
+      title:"Welcome, " + (user?.name?.split(" ")[0] || "") + "!",
       sub:"Have you used FreeTime before?",
       isChoice: true,
     },
