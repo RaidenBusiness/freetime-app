@@ -1,798 +1,345 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect } from "react";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
-const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-  : null;
+// ─── Supabase via CDN global ───────────────────────────────────────────────
+const SB_URL = import.meta.env.VITE_SUPABASE_URL  || "";
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 
-async function sbFetch(path, options = {}) {
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token || SUPABASE_ANON_KEY;
-  const headers = {
-    "Content-Type": "application/json",
-    "apikey": SUPABASE_ANON_KEY,
-    "Authorization": `Bearer ${token}`,
-    ...options.headers,
-  };
-  const res = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers });
-  const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(json.error_description || json.msg || json.message || json.error || `Error ${res.status}`);
+function getSupabase() {
+  if (!SB_URL || !SB_KEY) return null;
+  if (typeof window === "undefined" || !window.supabase) return null;
+  if (!window._sbClient) window._sbClient = window.supabase.createClient(SB_URL, SB_KEY);
+  return window._sbClient;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────
+const DAYS      = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const FULL_DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const MONTHS    = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const P_COLORS  = ["#f59e0b","#10b981","#6366f1","#ef4444","#ec4899","#06b6d4"];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+function wkStart(date) { const d=new Date(date); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()); return d; }
+function addDays(date,n) { const d=new Date(date); d.setDate(d.getDate()+n); return d; }
+function sameDay(a,b) { return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate(); }
+function fmt12(h,m) { const ap=h>=12?"pm":"am"; const hr=h%12===0?12:h%12; return `${hr}:${String(m).padStart(2,"0")} ${ap}`; }
+function shiftHrs(s) { const [sh,sm]=s.startTime.split(":").map(Number),[eh,em]=s.endTime.split(":").map(Number); let m=(eh*60+em)-(sh*60+sm); if(m<0)m+=1440; return Math.round(m/6)/10; }
+function fmtDur(h) { return h<1?`${Math.round(h*60)}m`:`${h}h`; }
+function todayPlus(n) { const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()+n); return d.toISOString().split("T")[0]; }
+
+const INIT_SHIFTS = [
+  {id:1,date:todayPlus(1),startTime:"14:00",endTime:"22:00",label:"Work",travelMins:20},
+  {id:2,date:todayPlus(3),startTime:"16:00",endTime:"23:00",label:"Work",travelMins:20},
+  {id:3,date:todayPlus(5),startTime:"10:00",endTime:"18:00",label:"Work",travelMins:20},
+];
+const INIT_PRIS = [
+  {id:1,name:"Gym",    color:"#f59e0b",days:["Tue","Thu","Sat"],duration:1.5,travelMins:15},
+  {id:2,name:"Reading",color:"#10b981",days:["Mon","Wed","Fri","Sun"],duration:1,travelMins:0},
+  {id:3,name:"Gaming", color:"#6366f1",days:["Sat","Sun"],duration:2,travelMins:0},
+];
+
+async function sbRest(path,opts={}) {
+  const sb=getSupabase(); let token=SB_KEY;
+  if(sb){const{data}=await sb.auth.getSession();token=data?.session?.access_token||SB_KEY;}
+  const res=await fetch(`${SB_URL}${path}`,{...opts,headers:{"Content-Type":"application/json",apikey:SB_KEY,Authorization:`Bearer ${token}`,...opts.headers}});
+  const txt=await res.text(); const json=txt?JSON.parse(txt):{};
+  if(!res.ok) throw new Error(json.error_description||json.message||json.error||`Error ${res.status}`);
   return json;
 }
 
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const FULL_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-
-const PRIORITY_COLORS = ["#f59e0b","#10b981","#6366f1","#ef4444","#ec4899","#06b6d4"];
-
-function getWeekStart(date) {
-  const d = new Date(date);
-  d.setHours(0,0,0,0);
-  d.setDate(d.getDate() - d.getDay());
-  return d;
-}
-
-function addDays(date, n) {
-  const d = new Date(date);
-  d.setDate(d.getDate() + n);
-  return d;
-}
-
-function isSameDay(a, b) {
-  return a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-}
-
-function fmt12(h, m) {
-  const ampm = h >= 12 ? "pm" : "am";
-  const hour = h % 12 === 0 ? 12 : h % 12;
-  return `${hour}:${String(m).padStart(2,"0")} ${ampm}`;
-}
-
-function shiftHours(shift) {
-  const [sh, sm] = shift.startTime.split(":").map(Number);
-  const [eh, em] = shift.endTime.split(":").map(Number);
-  let mins = (eh * 60 + em) - (sh * 60 + sm);
-  if (mins < 0) mins += 24 * 60;
-  return Math.round((mins / 60) * 10) / 10;
-}
-
-const initialShifts = [
-  { id: 1, date: (() => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - d.getDay() + 1); return d.toISOString().split("T")[0]; })(), startTime: "14:00", endTime: "22:00", label: "Work", travelMins: 20 },
-  { id: 2, date: (() => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - d.getDay() + 3); return d.toISOString().split("T")[0]; })(), startTime: "16:00", endTime: "23:00", label: "Work", travelMins: 20 },
-  { id: 3, date: (() => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - d.getDay() + 5); return d.toISOString().split("T")[0]; })(), startTime: "10:00", endTime: "18:00", label: "Work", travelMins: 20 },
-];
-
-const initialPriorities = [
-  { id: 1, name: "Gym", color: "#f59e0b", days: ["Tue","Thu","Sat"], duration: 1.5, travelMins: 15 },
-  { id: 2, name: "Reading", color: "#10b981", days: ["Mon","Wed","Fri","Sun"], duration: 1, travelMins: 0 },
-  { id: 3, name: "Gaming", color: "#6366f1", days: ["Sat","Sun"], duration: 2, travelMins: 0 },
-];
+// ─── Styles ───────────────────────────────────────────────────────────────
+const S={
+  root:{minHeight:"100vh",background:"#0d0d14",display:"flex",justifyContent:"center",fontFamily:"'DM Sans',sans-serif"},
+  app:{width:"100%",maxWidth:430,minHeight:"100vh",background:"#0d0d14",display:"flex",flexDirection:"column"},
+  header:{padding:"52px 24px 20px",background:"linear-gradient(180deg,#13131f 0%,#0d0d14 100%)"},
+  logo:{fontSize:13,fontWeight:600,letterSpacing:"0.18em",color:"#f59e0b",textTransform:"uppercase",marginBottom:12},
+  greeting:{fontSize:26,fontWeight:700,color:"#fff",lineHeight:1.2,marginBottom:4},
+  sub:{fontSize:14,color:"#6b6b8a"},
+  weekNav:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 24px",marginTop:24,marginBottom:16},
+  weekLbl:{fontSize:15,fontWeight:600,color:"#fff"},
+  navBtn:{background:"#1e1e2e",border:"none",color:"#9090aa",borderRadius:10,width:34,height:34,cursor:"pointer",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center"},
+  strip:{display:"flex",padding:"0 16px",gap:6,marginBottom:4},
+  pill:(sel,tod)=>({flex:1,textAlign:"center",padding:"8px 0 6px",borderRadius:12,cursor:"pointer",background:sel?"#f59e0b":tod?"#1e1e2e":"transparent",border:tod&&!sel?"1px solid #2a2a3e":"1px solid transparent"}),
+  pillName:(sel)=>({fontSize:10,color:sel?"#0d0d14":"#6b6b8a",fontWeight:600,letterSpacing:"0.05em",display:"block",marginBottom:3}),
+  pillNum:(sel)=>({fontSize:16,fontWeight:700,color:sel?"#0d0d14":"#fff",display:"block"}),
+  dot:(sel,has)=>({width:has?6:4,height:has?6:4,borderRadius:"50%",background:sel?"#0d0d14":has?"#f59e0b":"transparent",margin:"3px auto 0",boxShadow:!sel&&has?"0 0 5px #f59e0b":"none"}),
+  body:{flex:1,padding:"16px 16px 90px",display:"flex",flexDirection:"column",gap:16,overflowY:"auto"},
+  secLbl:{fontSize:11,fontWeight:700,letterSpacing:"0.1em",color:"#4a4a6a",textTransform:"uppercase",marginBottom:8},
+  card:{background:"#13131f",borderRadius:16,border:"1px solid #1e1e2e",padding:"14px 16px"},
+  badge:{fontSize:11,fontWeight:700,color:"#f59e0b",background:"rgba(245,158,11,.12)",borderRadius:20,padding:"3px 10px"},
+  statGrid:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10},
+  statCard:{background:"#13131f",border:"1px solid #1e1e2e",borderRadius:14,padding:"14px 16px"},
+  track:{background:"#1e1e2e",borderRadius:20,height:6,marginTop:10,overflow:"hidden"},
+  fill:(pct,col)=>({height:"100%",width:`${Math.min(100,pct)}%`,background:col,borderRadius:20,transition:"width .4s"}),
+  addBtn:{background:"#f59e0b",color:"#0d0d14",border:"none",borderRadius:14,padding:"14px",width:"100%",fontSize:14,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8},
+  ghostBtn:{background:"#13131f",color:"#9090aa",border:"1px solid #1e1e2e",borderRadius:14,padding:"12px",width:"100%",fontSize:13,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8},
+  tabBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:"#13131f",borderTop:"1px solid #1e1e2e",display:"flex",padding:"10px 0 20px",zIndex:100},
+  tabItem:(a)=>({flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3,fontSize:10,fontWeight:600,color:a?"#f59e0b":"#3a3a5a",cursor:"pointer",border:"none",background:"transparent"}),
+  modal:{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:200},
+  sheet:{width:"100%",maxWidth:430,background:"#13131f",borderRadius:"20px 20px 0 0",padding:"24px 20px 40px",border:"1px solid #1e1e2e",borderBottom:"none"},
+  mTitle:{fontSize:18,fontWeight:700,color:"#fff",marginBottom:20},
+  fLbl:{fontSize:11,fontWeight:600,color:"#6b6b8a",marginBottom:6,display:"block",letterSpacing:"0.05em",textTransform:"uppercase"},
+  inp:{width:"100%",background:"#0d0d14",border:"1px solid #1e1e2e",borderRadius:10,padding:"11px 14px",color:"#fff",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"'DM Sans',sans-serif"},
+  colDot:(col,sel)=>({width:28,height:28,borderRadius:"50%",background:col,cursor:"pointer",border:sel?"3px solid #fff":"3px solid transparent",boxSizing:"border-box"}),
+  dayTog:(a)=>({flex:1,padding:"8px 0",borderRadius:10,background:a?"#f59e0b":"#0d0d14",color:a?"#0d0d14":"#6b6b8a",border:"1px solid #1e1e2e",fontSize:11,fontWeight:700,cursor:"pointer",textAlign:"center"}),
+  delBtn:{background:"transparent",border:"none",color:"#3a3a5a",cursor:"pointer",fontSize:17,padding:"4px 6px",borderRadius:6,lineHeight:1},
+  editBtn:{background:"transparent",border:"none",color:"#4a4a7a",cursor:"pointer",fontSize:13,padding:"4px 6px",borderRadius:6,lineHeight:1},
+};
+const A={
+  root:{minHeight:"100vh",background:"#0d0d14",display:"flex",justifyContent:"center",alignItems:"center",fontFamily:"'DM Sans',sans-serif"},
+  card:{width:"100%",maxWidth:390,padding:"0 24px 40px",display:"flex",flexDirection:"column"},
+  logo:{fontSize:13,fontWeight:700,letterSpacing:"0.18em",color:"#f59e0b",textTransform:"uppercase",marginBottom:32,textAlign:"center"},
+  tagline:{fontSize:26,fontWeight:700,color:"#fff",lineHeight:1.25,marginBottom:8,textAlign:"center"},
+  sub:{fontSize:14,color:"#6b6b8a",textAlign:"center",marginBottom:36},
+  tabRow:{display:"flex",background:"#13131f",borderRadius:12,padding:4,marginBottom:24,border:"1px solid #1e1e2e"},
+  tabBtn:(a)=>({flex:1,padding:"9px 0",borderRadius:9,border:"none",cursor:"pointer",fontSize:13,fontWeight:700,background:a?"#f59e0b":"transparent",color:a?"#0d0d14":"#4a4a6a"}),
+  field:{marginBottom:14},
+  label:{fontSize:11,fontWeight:700,letterSpacing:"0.08em",color:"#4a4a6a",textTransform:"uppercase",display:"block",marginBottom:6},
+  inp:{width:"100%",background:"#13131f",border:"1px solid #1e1e2e",borderRadius:12,padding:"13px 16px",color:"#fff",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"'DM Sans',sans-serif"},
+  keepRow:{display:"flex",alignItems:"center",gap:10,marginBottom:22,cursor:"pointer"},
+  chk:(c)=>({width:20,height:20,borderRadius:6,border:c?"none":"2px solid #2a2a3e",background:c?"#f59e0b":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,cursor:"pointer"}),
+  submit:{width:"100%",background:"#f59e0b",color:"#0d0d14",border:"none",borderRadius:14,padding:"15px",fontSize:15,fontWeight:700,cursor:"pointer",marginBottom:16},
+  error:{fontSize:13,color:"#ef4444",textAlign:"center",marginBottom:14,minHeight:20},
+  divRow:{display:"flex",alignItems:"center",gap:12,margin:"4px 0 20px"},
+  divLine:{flex:1,height:1,background:"#1e1e2e"},
+  divTxt:{fontSize:11,color:"#3a3a5a",fontWeight:600},
+  swTxt:{fontSize:13,color:"#4a4a6a",textAlign:"center"},
+  swLink:{color:"#f59e0b",cursor:"pointer",fontWeight:600,background:"none",border:"none",fontSize:13,fontFamily:"'DM Sans',sans-serif"},
+};
 
 export default function FreeTime() {
-  const today = useMemo(() => { const d = new Date(); d.setHours(0,0,0,0); return d; }, []);
+  const today=useMemo(()=>{const d=new Date();d.setHours(0,0,0,0);return d;},[]);
+  const [tab,setTab]=useState("home");
+  const [weekOff,setWeekOff]=useState(0);
+  const [selDay,setSelDay]=useState(today);
+  const [shifts,setShifts]=useState(INIT_SHIFTS);
+  const [pris,setPris]=useState(INIT_PRIS);
+  const [sleepH,setSleepH]=useState(8);
+  const [showAddSh,setShowAddSh]=useState(false);
+  const [editShId,setEditShId]=useState(null);
+  const [delShId,setDelShId]=useState(null);
+  const [newSh,setNewSh]=useState({date:today.toISOString().split("T")[0],startTime:"09:00",endTime:"17:00",label:"Work",travelMins:0});
+  const [showAddP,setShowAddP]=useState(false);
+  const [editPId,setEditPId]=useState(null);
+  const [durUnit,setDurUnit]=useState("hrs");
+  const [newP,setNewP]=useState({name:"",color:"#f59e0b",days:[],duration:1,travelMins:0});
+  const [authed,setAuthed]=useState(false);
+  const [authMode,setAuthMode]=useState("login");
+  const [authName,setAuthName]=useState("");
+  const [authEmail,setAuthEmail]=useState("");
+  const [authPass,setAuthPass]=useState("");
+  const [keepIn,setKeepIn]=useState(false);
+  const [showPw,setShowPw]=useState(false);
+  const [authErr,setAuthErr]=useState("");
+  const [authLoading,setAuthLoading]=useState(false);
+  const [signupDone,setSignupDone]=useState(false);
+  const [user,setUser]=useState(null);
 
-  // Auth state
-  const [authed, setAuthed] = useState(false);
-  const [authMode, setAuthMode] = useState("login");
-  const [authName, setAuthName] = useState("");
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [keepSignedIn, setKeepSignedIn] = useState(false);
-  const [authError, setAuthError] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
-  const [dataLoading, setDataLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [signupDone, setSignupDone] = useState(false);
-
-  // Check for existing session on mount
-  useEffect(() => {
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        const name = session.user.user_metadata?.name || session.user.email.split("@")[0];
-        setCurrentUser({ name, email: session.user.email, id: session.user.id });
-        setAuthed(true);
+  useEffect(()=>{
+    const sb=getSupabase(); if(!sb) return;
+    sb.auth.getSession().then(({data:{session}})=>{
+      if(session?.user){
+        const name=session.user.user_metadata?.name||session.user.email.split("@")[0];
+        setUser({name,email:session.user.email,id:session.user.id});setAuthed(true);
       }
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        const name = session.user.user_metadata?.name || session.user.email.split("@")[0];
-        setCurrentUser({ name, email: session.user.email, id: session.user.id });
-        setAuthed(true);
-      }
+    const {data:{subscription}}=sb.auth.onAuthStateChange((_e,session)=>{
+      if(session?.user){const name=session.user.user_metadata?.name||session.user.email.split("@")[0];setUser({name,email:session.user.email,id:session.user.id});setAuthed(true);}
     });
-    return () => subscription.unsubscribe();
-  }, []);
+    return ()=>subscription.unsubscribe();
+  },[]);
 
-  // Load user data when authed
-  useEffect(() => {
-    if (!authed || !currentUser?.id) return;
-    loadUserData();
-  }, [authed, currentUser?.id]);
+  useEffect(()=>{
+    if(!authed||!user?.id) return;
+    (async()=>{
+      try{
+        const[sr,pr,st]=await Promise.all([
+          sbRest(`/rest/v1/shifts?user_id=eq.${user.id}&order=date.asc`),
+          sbRest(`/rest/v1/priorities?user_id=eq.${user.id}&order=sort_order.asc`),
+          sbRest(`/rest/v1/user_settings?user_id=eq.${user.id}`),
+        ]);
+        if(Array.isArray(sr)&&sr.length) setShifts(sr.map(s=>({id:s.id,date:s.date,startTime:s.start_time,endTime:s.end_time,label:s.label,travelMins:s.travel_mins})));
+        if(Array.isArray(pr)&&pr.length) setPris(pr.map(p=>({id:p.id,name:p.name,color:p.color,days:p.days,duration:p.duration,travelMins:p.travel_mins})));
+        if(Array.isArray(st)&&st.length) setSleepH(st[0].sleep_hours);
+      }catch(e){console.error("Load error",e);}
+    })();
+  },[authed,user?.id]);
 
-  const loadUserData = useCallback(async () => {
-    if (!currentUser?.id) return;
-    setDataLoading(true);
-    try {
-      const [shiftsRes, prioritiesRes, settingsRes] = await Promise.all([
-        sbFetch(`/rest/v1/shifts?user_id=eq.${currentUser.id}&order=date.asc`),
-        sbFetch(`/rest/v1/priorities?user_id=eq.${currentUser.id}&order=sort_order.asc`),
-        sbFetch(`/rest/v1/user_settings?user_id=eq.${currentUser.id}`),
-      ]);
-      if (Array.isArray(shiftsRes) && shiftsRes.length > 0) {
-        setShifts(shiftsRes.map(s => ({ id: s.id, date: s.date, startTime: s.start_time, endTime: s.end_time, label: s.label, travelMins: s.travel_mins })));
-      }
-      if (Array.isArray(prioritiesRes) && prioritiesRes.length > 0) {
-        setPriorities(prioritiesRes.map(p => ({ id: p.id, name: p.name, color: p.color, days: p.days, duration: p.duration, travelMins: p.travel_mins })));
-      }
-      if (Array.isArray(settingsRes) && settingsRes.length > 0) {
-        setSleepHours(settingsRes[0].sleep_hours);
-      }
-    } catch (e) { console.error("Load error", e); }
-    setDataLoading(false);
-  }, [currentUser?.id]);
-
-  async function handleAuth() {
-    setAuthError("");
-    if (!supabase) { setAuthError("App not configured. Please add environment variables in Vercel."); return; }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-    if (!authEmail.trim() || !authPassword.trim()) { setAuthError("Please fill in all fields."); return; }
-    if (!emailRegex.test(authEmail.trim())) { setAuthError("Please enter a valid email address."); return; }
-    if (authMode === "signup" && !authName.trim()) { setAuthError("Please enter your name."); return; }
-    if (authPassword.length < 6) { setAuthError("Password must be at least 6 characters."); return; }
+  async function doAuth(){
+    setAuthErr("");
+    const rx=/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if(!authEmail.trim()||!authPass.trim()){setAuthErr("Please fill in all fields.");return;}
+    if(!rx.test(authEmail.trim())){setAuthErr("Please enter a valid email address.");return;}
+    if(authMode==="signup"&&!authName.trim()){setAuthErr("Please enter your name.");return;}
+    if(authPass.length<6){setAuthErr("Password must be at least 6 characters.");return;}
+    const sb=getSupabase();
+    if(!sb){setAuthErr("App not configured. Please check Vercel environment variables.");return;}
     setAuthLoading(true);
-    try {
-      if (authMode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email: authEmail.trim(),
-          password: authPassword,
-          options: { data: { name: authName.trim() } },
-        });
-        if (error) throw error;
+    try{
+      if(authMode==="signup"){
+        const{error}=await sb.auth.signUp({email:authEmail.trim(),password:authPass,options:{data:{name:authName.trim()}}});
+        if(error) throw error;
         setSignupDone(true);
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: authEmail.trim(),
-          password: authPassword,
-        });
-        if (error) throw error;
-        const name = data.user?.user_metadata?.name || authEmail.split("@")[0];
-        setCurrentUser({ name, email: data.user.email, id: data.user.id });
-        setAuthed(true);
+      }else{
+        const{data,error}=await sb.auth.signInWithPassword({email:authEmail.trim(),password:authPass});
+        if(error) throw error;
+        const name=data.user?.user_metadata?.name||authEmail.split("@")[0];
+        setUser({name,email:data.user.email,id:data.user.id});setAuthed(true);
       }
-    } catch (e) {
-      const msg = (e.message || "").toLowerCase();
-      if (msg.includes("email not confirmed")) {
-        setAuthError("Please confirm your email before logging in. Check your inbox.");
-      } else if (msg.includes("invalid login") || msg.includes("invalid credentials")) {
-        setAuthError("Incorrect email or password.");
-      } else if (msg.includes("already registered") || msg.includes("already exists") || msg.includes("user already")) {
-        setAuthError("An account with this email already exists. Try logging in.");
-      } else {
-        setAuthError(e.message || "Something went wrong. Please try again.");
-      }
+    }catch(e){
+      const m=(e.message||"").toLowerCase();
+      if(m.includes("not confirmed")) setAuthErr("Please confirm your email first. Check your inbox.");
+      else if(m.includes("invalid")||m.includes("credentials")) setAuthErr("Incorrect email or password.");
+      else if(m.includes("already")) setAuthErr("An account with this email already exists. Try logging in.");
+      else setAuthErr(e.message||"Something went wrong. Please try again.");
     }
     setAuthLoading(false);
   }
 
-  async function handleSignOut() {
-    await supabase.auth.signOut();
-    setAuthed(false);
-    setCurrentUser(null);
-    setShifts(initialShifts);
-    setPriorities(initialPriorities);
-    setSleepHours(8);
-    setAuthEmail(""); setAuthPassword(""); setAuthName(""); setAuthError("");
-  }
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [shifts, setShifts] = useState(initialShifts);
-  const [priorities, setPriorities] = useState(initialPriorities);
-  const [tab, setTab] = useState("home");
-  const [selectedDay, setSelectedDay] = useState(today);
-  const [showAddShift, setShowAddShift] = useState(false);
-  const [showAddPriority, setShowAddPriority] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
-
-  const [newShift, setNewShift] = useState({ date: today.toISOString().split("T")[0], startTime: "09:00", endTime: "17:00", label: "Work", travelMins: 0 });
-  const [newPriority, setNewPriority] = useState({ name: "", color: "#f59e0b", days: [], duration: 1, travelMins: 0 });
-  const [editingShiftId, setEditingShiftId] = useState(null);
-  const [editingPriorityId, setEditingPriorityId] = useState(null);
-  const [sleepHours, setSleepHours] = useState(8);
-  const [durationUnit, setDurationUnit] = useState("hrs");
-
-  const weekStart = useMemo(() => addDays(getWeekStart(today), weekOffset * 7), [today, weekOffset]);
-  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
-
-  const weekShifts = useMemo(() =>
-    shifts.filter(s => {
-      const sd = new Date(s.date + "T00:00:00");
-      return weekDays.some(d => isSameDay(d, sd));
-    }), [shifts, weekDays]);
-
-  const workDays = useMemo(() => new Set(weekShifts.map(s => s.date)), [weekShifts]);
-  const freeDays = 7 - workDays.size;
-
-  const totalWorkHours = useMemo(() =>
-    weekShifts.reduce((acc, s) => acc + shiftHours(s), 0), [weekShifts]);
-  const totalShiftTravelHours = useMemo(() =>
-    weekShifts.reduce((acc, s) => acc + ((s.travelMins ?? 0) / 60), 0), [weekShifts]);
-  const wakingHours = 24 - sleepHours;
-  const totalPriorityHours = useMemo(() =>
-    priorities.reduce((acc, p) => {
-      const daysPerWeek = p.days.length === 0 ? 7 : p.days.length;
-      return acc + (p.duration ?? 1) * daysPerWeek;
-    }, 0), [priorities]);
-  const totalPriorityTravelHours = useMemo(() =>
-    priorities.reduce((acc, p) => {
-      const daysPerWeek = p.days.length === 0 ? 7 : p.days.length;
-      return acc + ((p.travelMins ?? 0) / 60) * daysPerWeek;
-    }, 0), [priorities]);
-  const totalFreeHours = Math.max(0, Math.round((7 * wakingHours - totalWorkHours - totalShiftTravelHours - totalPriorityHours - totalPriorityTravelHours) * 10) / 10);
-
-  const selectedDateStr = selectedDay.toISOString().split("T")[0];
-  const dayShifts = shifts.filter(s => s.date === selectedDateStr);
-  const selectedDayAbbr = DAYS[selectedDay.getDay()];
-  const dayPriorities = priorities.filter(p => p.days.length === 0 || p.days.includes(selectedDayAbbr));
-
-  const weekLabel = (() => {
-    const end = addDays(weekStart, 6);
-    if (weekStart.getMonth() === end.getMonth())
-      return `${MONTHS[weekStart.getMonth()]} ${weekStart.getDate()}–${end.getDate()}`;
-    return `${MONTHS[weekStart.getMonth()].slice(0,3)} ${weekStart.getDate()} – ${MONTHS[end.getMonth()].slice(0,3)} ${end.getDate()}`;
-  })();
-
-  async function addShift() {
-    if (!newShift.date || !newShift.startTime || !newShift.endTime) return;
-    const payload = { user_id: currentUser.id, date: newShift.date, start_time: newShift.startTime, end_time: newShift.endTime, label: newShift.label, travel_mins: newShift.travelMins };
-    try {
-      if (editingShiftId) {
-        await sbFetch(`/rest/v1/shifts?id=eq.${editingShiftId}`, { method: "PATCH", body: JSON.stringify(payload), headers: { Prefer: "return=representation" } });
-        setShifts(prev => prev.map(s => s.id === editingShiftId ? { ...newShift, id: editingShiftId } : s));
-        setEditingShiftId(null);
-      } else {
-        const res = await sbFetch("/rest/v1/shifts", { method: "POST", body: JSON.stringify(payload), headers: { Prefer: "return=representation" } });
-        const created = Array.isArray(res) ? res[0] : res;
-        setShifts(prev => [...prev, { ...newShift, id: created.id }]);
-      }
-    } catch (e) { console.error("Shift save error", e); }
-    setShowAddShift(false);
-    setNewShift({ date: today.toISOString().split("T")[0], startTime: "09:00", endTime: "17:00", label: "Work", travelMins: 0 });
+  async function doSignOut(){
+    const sb=getSupabase(); if(sb) await sb.auth.signOut().catch(()=>{});
+    setAuthed(false);setUser(null);setShifts(INIT_SHIFTS);setPris(INIT_PRIS);setSleepH(8);
+    setAuthEmail("");setAuthPass("");setAuthName("");setAuthErr("");
   }
 
-  function openEditShift(shift) {
-    setNewShift({ date: shift.date, startTime: shift.startTime, endTime: shift.endTime, label: shift.label, travelMins: shift.travelMins ?? 0 });
-    setEditingShiftId(shift.id);
-    setShowAddShift(true);
-  }
-
-  async function deleteShift(id) {
-    try {
-      await sbFetch(`/rest/v1/shifts?id=eq.${id}`, { method: "DELETE" });
-      setShifts(prev => prev.filter(s => s.id !== id));
-    } catch (e) { console.error("Delete shift error", e); }
-    setShowDeleteConfirm(null);
-  }
-
-  function addPriority() {
-    if (!newPriority.name.trim()) return;
-    if (editingPriorityId) {
-      setPriorities(prev => prev.map(p => p.id === editingPriorityId ? { ...newPriority, id: editingPriorityId } : p));
-      setEditingPriorityId(null);
-    } else {
-      setPriorities(prev => [...prev, { ...newPriority, id: Date.now() }]);
+  async function saveSh(){
+    if(!newSh.date||!newSh.startTime||!newSh.endTime) return;
+    if(user?.id){
+      const pl={user_id:user.id,date:newSh.date,start_time:newSh.startTime,end_time:newSh.endTime,label:newSh.label,travel_mins:newSh.travelMins};
+      try{
+        if(editShId){
+          await sbRest(`/rest/v1/shifts?id=eq.${editShId}`,{method:"PATCH",body:JSON.stringify(pl),headers:{Prefer:"return=representation"}});
+          setShifts(p=>p.map(s=>s.id===editShId?{...newSh,id:editShId}:s));
+        }else{
+          const res=await sbRest("/rest/v1/shifts",{method:"POST",body:JSON.stringify(pl),headers:{Prefer:"return=representation"}});
+          const c=Array.isArray(res)?res[0]:res; setShifts(p=>[...p,{...newSh,id:c.id}]);
+        }
+      }catch(e){console.error(e);}
+    }else{
+      if(editShId) setShifts(p=>p.map(s=>s.id===editShId?{...newSh,id:editShId}:s));
+      else setShifts(p=>[...p,{...newSh,id:Date.now()}]);
     }
-    setShowAddPriority(false);
-    setNewPriority({ name: "", color: "#f59e0b", days: [], duration: 1, travelMins: 0 });
+    setEditShId(null);setShowAddSh(false);
+    setNewSh({date:today.toISOString().split("T")[0],startTime:"09:00",endTime:"17:00",label:"Work",travelMins:0});
   }
 
-  function openEditPriority(p) {
-    setNewPriority({ name: p.name, color: p.color, days: p.days, duration: p.duration ?? 1, travelMins: p.travelMins ?? 0 });
-    setEditingPriorityId(p.id);
-    setDurationUnit("hrs");
-    setShowAddPriority(true);
+  async function delSh(id){
+    if(user?.id){try{await sbRest(`/rest/v1/shifts?id=eq.${id}`,{method:"DELETE"});}catch(e){console.error(e);}}
+    setShifts(p=>p.filter(s=>s.id!==id));setDelShId(null);
   }
 
-  function deletePriority(id) {
-    setPriorities(prev => prev.filter(p => p.id !== id));
+  function openEditSh(s){setNewSh({date:s.date,startTime:s.startTime,endTime:s.endTime,label:s.label,travelMins:s.travelMins??0});setEditShId(s.id);setShowAddSh(true);}
+
+  async function saveP(){
+    if(!newP.name.trim()) return;
+    if(user?.id){
+      const pl={user_id:user.id,name:newP.name,color:newP.color,days:newP.days,duration:newP.duration,travel_mins:newP.travelMins,sort_order:0};
+      try{
+        if(editPId){
+          await sbRest(`/rest/v1/priorities?id=eq.${editPId}`,{method:"PATCH",body:JSON.stringify(pl),headers:{Prefer:"return=representation"}});
+          setPris(p=>p.map(x=>x.id===editPId?{...newP,id:editPId}:x));
+        }else{
+          const res=await sbRest("/rest/v1/priorities",{method:"POST",body:JSON.stringify(pl),headers:{Prefer:"return=representation"}});
+          const c=Array.isArray(res)?res[0]:res; setPris(p=>[...p,{...newP,id:c.id}]);
+        }
+      }catch(e){console.error(e);}
+    }else{
+      if(editPId) setPris(p=>p.map(x=>x.id===editPId?{...newP,id:editPId}:x));
+      else setPris(p=>[...p,{...newP,id:Date.now()}]);
+    }
+    setEditPId(null);setShowAddP(false);setNewP({name:"",color:"#f59e0b",days:[],duration:1,travelMins:0});
   }
 
-  function togglePriorityDay(day) {
-    setNewPriority(p => ({
-      ...p,
-      days: p.days.includes(day) ? p.days.filter(d => d !== day) : [...p.days, day]
-    }));
-  }
+  function delP(id){setPris(p=>p.filter(x=>x.id!==id));}
+  function openEditP(p){setNewP({name:p.name,color:p.color,days:p.days,duration:p.duration??1,travelMins:p.travelMins??0});setEditPId(p.id);setDurUnit("hrs");setShowAddP(true);}
+  function togDay(d){setNewP(p=>({...p,days:p.days.includes(d)?p.days.filter(x=>x!==d):[...p.days,d]}));}
 
-  const styles = {
-    root: {
-      minHeight: "100vh",
-      background: "#0d0d14",
-      display: "flex",
-      justifyContent: "center",
-      fontFamily: "'DM Sans', sans-serif",
-    },
-    app: {
-      width: "100%",
-      maxWidth: 430,
-      minHeight: "100vh",
-      background: "#0d0d14",
-      display: "flex",
-      flexDirection: "column",
-      position: "relative",
-    },
-    header: {
-      padding: "52px 24px 20px",
-      background: "linear-gradient(180deg, #13131f 0%, #0d0d14 100%)",
-    },
-    logo: {
-      fontSize: 13,
-      fontWeight: 600,
-      letterSpacing: "0.18em",
-      color: "#f59e0b",
-      textTransform: "uppercase",
-      marginBottom: 12,
-    },
-    greeting: {
-      fontSize: 26,
-      fontWeight: 700,
-      color: "#fff",
-      lineHeight: 1.2,
-      marginBottom: 4,
-    },
-    subGreeting: {
-      fontSize: 14,
-      color: "#6b6b8a",
-    },
-    weekNav: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      padding: "0 24px",
-      marginTop: 24,
-      marginBottom: 16,
-    },
-    weekLabel: { fontSize: 15, fontWeight: 600, color: "#fff" },
-    navBtn: {
-      background: "#1e1e2e",
-      border: "none",
-      color: "#9090aa",
-      borderRadius: 10,
-      width: 34,
-      height: 34,
-      cursor: "pointer",
-      fontSize: 16,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    dayStrip: {
-      display: "flex",
-      padding: "0 16px",
-      gap: 6,
-      marginBottom: 4,
-    },
-    dayPill: (isToday, isSelected, hasShift) => ({
-      flex: 1,
-      textAlign: "center",
-      padding: "8px 0 6px",
-      borderRadius: 12,
-      cursor: "pointer",
-      background: isSelected ? "#f59e0b" : isToday ? "#1e1e2e" : "transparent",
-      border: isToday && !isSelected ? "1px solid #2a2a3e" : "1px solid transparent",
-      transition: "all 0.15s",
-    }),
-    dayName: (isSelected) => ({
-      fontSize: 10,
-      color: isSelected ? "#0d0d14" : "#6b6b8a",
-      fontWeight: 600,
-      letterSpacing: "0.05em",
-      display: "block",
-      marginBottom: 3,
-    }),
-    dayNum: (isSelected, hasShift) => ({
-      fontSize: 16,
-      fontWeight: 700,
-      color: isSelected ? "#0d0d14" : "#fff",
-      display: "block",
-    }),
-    shiftDot: (isSelected, hasShift) => ({
-      width: hasShift ? 6 : 4,
-      height: hasShift ? 6 : 4,
-      borderRadius: "50%",
-      background: isSelected ? "#0d0d14" : hasShift ? "#f59e0b" : "transparent",
-      margin: "3px auto 0",
-      boxShadow: !isSelected && hasShift ? "0 0 5px #f59e0b" : "none",
-    }),
-    body: {
-      flex: 1,
-      padding: "16px 16px 90px",
-      display: "flex",
-      flexDirection: "column",
-      gap: 16,
-      overflowY: "auto",
-    },
-    sectionLabel: {
-      fontSize: 11,
-      fontWeight: 700,
-      letterSpacing: "0.1em",
-      color: "#4a4a6a",
-      textTransform: "uppercase",
-      marginBottom: 8,
-    },
-    card: {
-      background: "#13131f",
-      borderRadius: 16,
-      border: "1px solid #1e1e2e",
-      padding: "14px 16px",
-    },
-    shiftRow: {
-      display: "flex",
-      alignItems: "center",
-      gap: 12,
-      padding: "10px 0",
-      borderBottom: "1px solid #1a1a2a",
-    },
-    shiftIcon: {
-      width: 38,
-      height: 38,
-      borderRadius: 10,
-      background: "#1e1e2e",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      flexShrink: 0,
-      fontSize: 17,
-    },
-    shiftInfo: { flex: 1 },
-    shiftTitle: { fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 2 },
-    shiftTime: { fontSize: 12, color: "#6b6b8a" },
-    shiftBadge: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: "#f59e0b",
-      background: "rgba(245,158,11,0.12)",
-      borderRadius: 20,
-      padding: "3px 10px",
-    },
-    freeRow: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      padding: "6px 0",
-    },
-    statGrid: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      gap: 10,
-    },
-    statCard: {
-      background: "#13131f",
-      border: "1px solid #1e1e2e",
-      borderRadius: 14,
-      padding: "14px 16px",
-    },
-    statNum: { fontSize: 28, fontWeight: 700, color: "#fff", lineHeight: 1 },
-    statLabel: { fontSize: 12, color: "#6b6b8a", marginTop: 4 },
-    barTrack: {
-      background: "#1e1e2e",
-      borderRadius: 20,
-      height: 6,
-      marginTop: 10,
-      overflow: "hidden",
-    },
-    barFill: (pct, color) => ({
-      height: "100%",
-      width: `${Math.min(100, pct)}%`,
-      background: color,
-      borderRadius: 20,
-      transition: "width 0.4s ease",
-    }),
-    priorityRow: {
-      display: "flex",
-      alignItems: "center",
-      gap: 12,
-      padding: "10px 0",
-      borderBottom: "1px solid #1a1a2a",
-    },
-    priorityDot: (color) => ({
-      width: 10,
-      height: 10,
-      borderRadius: "50%",
-      background: color,
-      flexShrink: 0,
-    }),
-    priorityName: { fontSize: 14, color: "#fff", fontWeight: 500, flex: 1 },
-    priorityDays: { fontSize: 12, color: "#4a4a6a" },
-    addBtn: {
-      background: "#f59e0b",
-      color: "#0d0d14",
-      border: "none",
-      borderRadius: 14,
-      padding: "14px",
-      width: "100%",
-      fontSize: 14,
-      fontWeight: 700,
-      cursor: "pointer",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 8,
-      letterSpacing: "0.02em",
-    },
-    ghostBtn: {
-      background: "#13131f",
-      color: "#9090aa",
-      border: "1px solid #1e1e2e",
-      borderRadius: 14,
-      padding: "12px",
-      width: "100%",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 8,
-    },
-    tabBar: {
-      position: "fixed",
-      bottom: 0,
-      left: "50%",
-      transform: "translateX(-50%)",
-      width: "100%",
-      maxWidth: 430,
-      background: "#13131f",
-      borderTop: "1px solid #1e1e2e",
-      display: "flex",
-      padding: "10px 0 20px",
-      zIndex: 100,
-    },
-    tabItem: (active) => ({
-      flex: 1,
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      gap: 3,
-      fontSize: 10,
-      fontWeight: 600,
-      letterSpacing: "0.05em",
-      color: active ? "#f59e0b" : "#3a3a5a",
-      cursor: "pointer",
-      border: "none",
-      background: "transparent",
-    }),
-    modal: {
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,0.7)",
-      display: "flex",
-      alignItems: "flex-end",
-      justifyContent: "center",
-      zIndex: 200,
-    },
-    modalSheet: {
-      width: "100%",
-      maxWidth: 430,
-      background: "#13131f",
-      borderRadius: "20px 20px 0 0",
-      padding: "24px 20px 40px",
-      border: "1px solid #1e1e2e",
-      borderBottom: "none",
-    },
-    modalTitle: { fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 20 },
-    fieldLabel: { fontSize: 12, fontWeight: 600, color: "#6b6b8a", marginBottom: 6, display: "block", letterSpacing: "0.05em", textTransform: "uppercase" },
-    input: {
-      width: "100%",
-      background: "#0d0d14",
-      border: "1px solid #1e1e2e",
-      borderRadius: 10,
-      padding: "11px 14px",
-      color: "#fff",
-      fontSize: 14,
-      outline: "none",
-      boxSizing: "border-box",
-      fontFamily: "'DM Sans', sans-serif",
-    },
-    colorDot: (color, selected) => ({
-      width: 28,
-      height: 28,
-      borderRadius: "50%",
-      background: color,
-      cursor: "pointer",
-      border: selected ? "3px solid #fff" : "3px solid transparent",
-      boxSizing: "border-box",
-    }),
-    dayToggle: (active) => ({
-      flex: 1,
-      padding: "8px 0",
-      borderRadius: 10,
-      background: active ? "#f59e0b" : "#0d0d14",
-      color: active ? "#0d0d14" : "#6b6b8a",
-      border: "1px solid #1e1e2e",
-      fontSize: 11,
-      fontWeight: 700,
-      cursor: "pointer",
-      textAlign: "center",
-    }),
-    deleteBtn: {
-      background: "transparent",
-      border: "none",
-      color: "#3a3a5a",
-      cursor: "pointer",
-      fontSize: 17,
-      padding: "4px 6px",
-      borderRadius: 6,
-      lineHeight: 1,
-    },
-    editBtn: {
-      background: "transparent",
-      border: "none",
-      color: "#4a4a7a",
-      cursor: "pointer",
-      fontSize: 13,
-      padding: "4px 6px",
-      borderRadius: 6,
-      lineHeight: 1,
-    },
-    emptyState: {
-      textAlign: "center",
-      padding: "32px 0",
-      color: "#3a3a5a",
-      fontSize: 14,
-    },
-  };
+  const ws=useMemo(()=>addDays(wkStart(today),weekOff*7),[today,weekOff]);
+  const wDays=useMemo(()=>Array.from({length:7},(_,i)=>addDays(ws,i)),[ws]);
+  const selDs=selDay.toISOString().split("T")[0];
+  const selAbbr=DAYS[selDay.getDay()];
+  const wShifts=useMemo(()=>shifts.filter(s=>{const d=new Date(s.date+"T00:00:00");return wDays.some(w=>sameDay(w,d));}),[shifts,wDays]);
+  const workDays=useMemo(()=>new Set(wShifts.map(s=>s.date)),[wShifts]);
+  const freeDays=7-workDays.size;
+  const totWorkH=useMemo(()=>wShifts.reduce((a,s)=>a+shiftHrs(s),0),[wShifts]);
+  const totTravW=useMemo(()=>wShifts.reduce((a,s)=>a+(s.travelMins??0)/60,0),[wShifts]);
+  const wakingH=24-sleepH;
+  const totPriH=useMemo(()=>pris.reduce((a,p)=>{const n=p.days.length===0?7:p.days.length;return a+(p.duration??1)*n;},0),[pris]);
+  const totPriT=useMemo(()=>pris.reduce((a,p)=>{const n=p.days.length===0?7:p.days.length;return a+((p.travelMins??0)/60)*n;},0),[pris]);
+  const trueFree=Math.max(0,Math.round((7*wakingH-totWorkH-totTravW-totPriH-totPriT)*10)/10);
+  const daySh=shifts.filter(s=>s.date===selDs);
+  const dayP=pris.filter(p=>p.days.length===0||p.days.includes(selAbbr));
+  function greet(){const h=new Date().getHours();return h<12?"Good morning":h<17?"Good afternoon":"Good evening";}
+  const isCurWeek=weekOff===0;
+  const wkLbl=(()=>{const e=addDays(ws,6);if(ws.getMonth()===e.getMonth())return `${MONTHS[ws.getMonth()]} ${ws.getDate()}\u2013${e.getDate()}`;return `${MONTHS[ws.getMonth()].slice(0,3)} ${ws.getDate()} \u2013 ${MONTHS[e.getMonth()].slice(0,3)} ${e.getDate()}`;})();
 
-  const todayGreeting = () => {
-    const h = new Date().getHours();
-    if (h < 12) return "Good morning";
-    if (h < 17) return "Good afternoon";
-    return "Good evening";
-  };
-
-  const isCurrentWeek = weekOffset === 0;
-
-  // Auth screen
-  if (!authed) {
-    const aStyles = {
-      root: { minHeight: "100vh", background: "#0d0d14", display: "flex", justifyContent: "center", alignItems: "center", fontFamily: "'DM Sans', sans-serif" },
-      card: { width: "100%", maxWidth: 390, padding: "0 24px 40px", display: "flex", flexDirection: "column" },
-      logo: { fontSize: 13, fontWeight: 700, letterSpacing: "0.18em", color: "#f59e0b", textTransform: "uppercase", marginBottom: 32, textAlign: "center" },
-      tagline: { fontSize: 26, fontWeight: 700, color: "#fff", lineHeight: 1.25, marginBottom: 8, textAlign: "center" },
-      sub: { fontSize: 14, color: "#6b6b8a", textAlign: "center", marginBottom: 36 },
-      tabRow: { display: "flex", background: "#13131f", borderRadius: 12, padding: 4, marginBottom: 24, border: "1px solid #1e1e2e" },
-      tabBtn: (active) => ({
-        flex: 1, padding: "9px 0", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
-        background: active ? "#f59e0b" : "transparent", color: active ? "#0d0d14" : "#4a4a6a",
-      }),
-      fieldWrap: { marginBottom: 14 },
-      label: { fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#4a4a6a", textTransform: "uppercase", display: "block", marginBottom: 6 },
-      input: { width: "100%", background: "#13131f", border: "1px solid #1e1e2e", borderRadius: 12, padding: "13px 16px", color: "#fff", fontSize: 14, outline: "none", boxSizing: "border-box", fontFamily: "'DM Sans', sans-serif" },
-      keepRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 22, cursor: "pointer" },
-      checkbox: (checked) => ({
-        width: 20, height: 20, borderRadius: 6, border: checked ? "none" : "2px solid #2a2a3e",
-        background: checked ? "#f59e0b" : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0, cursor: "pointer",
-      }),
-      submitBtn: { width: "100%", background: "#f59e0b", color: "#0d0d14", border: "none", borderRadius: 14, padding: "15px", fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 16 },
-      error: { fontSize: 13, color: "#ef4444", textAlign: "center", marginBottom: 14, minHeight: 20 },
-      divider: { display: "flex", alignItems: "center", gap: 12, margin: "4px 0 20px" },
-      divLine: { flex: 1, height: 1, background: "#1e1e2e" },
-      divText: { fontSize: 11, color: "#3a3a5a", fontWeight: 600 },
-      switchTxt: { fontSize: 13, color: "#4a4a6a", textAlign: "center" },
-      switchLink: { color: "#f59e0b", cursor: "pointer", fontWeight: 600, background: "none", border: "none", fontSize: 13, fontFamily: "'DM Sans', sans-serif" },
-    };
-
+  if(!authed){
     return (
       <>
-        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-        <div style={aStyles.root}>
-          <div style={aStyles.card}>
-
-            {/* Email confirmation screen */}
-            {signupDone ? (
-              <div style={{ textAlign: "center", paddingTop: 80 }}>
-                <div style={{ fontSize: 64, marginBottom: 20 }}>📬</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", marginBottom: 10 }}>Check your email</div>
-                <div style={{ fontSize: 14, color: "#6b6b8a", lineHeight: 1.6, marginBottom: 32 }}>
-                  We sent a confirmation link to{" "}
-                  <span style={{ color: "#f59e0b", fontWeight: 600 }}>{authEmail}</span>.
-                  {"\n"}Click it to activate your account, then come back here to log in.
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+        <div style={A.root}>
+          <div style={A.card}>
+            {signupDone?(
+              <div style={{textAlign:"center",paddingTop:80}}>
+                <div style={{fontSize:64,marginBottom:20}}>📬</div>
+                <div style={{fontSize:22,fontWeight:700,color:"#fff",marginBottom:10}}>Check your email</div>
+                <div style={{fontSize:14,color:"#6b6b8a",lineHeight:1.6,marginBottom:32}}>
+                  We sent a confirmation link to <span style={{color:"#f59e0b",fontWeight:600}}>{authEmail}</span>. Click it to activate your account, then log in.
                 </div>
-                <button style={aStyles.submitBtn} onClick={() => { setSignupDone(false); setAuthMode("login"); setAuthPassword(""); setAuthError(""); }}>
-                  Back to log in
-                </button>
-                <div style={{ fontSize: 12, color: "#3a3a5a", marginTop: 16 }}>
-                  Didn't get it? Check your spam folder.
-                </div>
+                <button style={A.submit} onClick={()=>{setSignupDone(false);setAuthMode("login");setAuthPass("");setAuthErr("");}}>Back to log in</button>
+                <div style={{fontSize:12,color:"#3a3a5a",marginTop:16}}>Didn&#39;t get it? Check your spam folder.</div>
               </div>
-            ) : (
+            ):(
               <>
-                {/* Logo + hero */}
-                <div style={{ textAlign: "center", marginBottom: 40, paddingTop: 40 }}>
-                  <div style={{ fontSize: 48, marginBottom: 12 }}>⏳</div>
-                  <div style={aStyles.logo}>FreeTime</div>
-                  <div style={aStyles.tagline}>{authMode === "login" ? "Welcome back" : "Take back your time"}</div>
-                  <div style={aStyles.sub}>{authMode === "login" ? "Sign in to your account" : "Create your free account and start planning"}</div>
+                <div style={{textAlign:"center",marginBottom:40,paddingTop:40}}>
+                  <div style={{fontSize:48,marginBottom:12}}>⏳</div>
+                  <div style={A.logo}>FreeTime</div>
+                  <div style={A.tagline}>{authMode==="login"?"Welcome back":"Take back your time"}</div>
+                  <div style={A.sub}>{authMode==="login"?"Sign in to your account":"Create your free account"}</div>
                 </div>
-
-                {/* Login / Sign up toggle */}
-                <div style={aStyles.tabRow}>
-                  <button style={aStyles.tabBtn(authMode === "login")} onClick={() => { setAuthMode("login"); setAuthError(""); }}>Log in</button>
-                  <button style={aStyles.tabBtn(authMode === "signup")} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>Sign up</button>
+                <div style={A.tabRow}>
+                  <button style={A.tabBtn(authMode==="login")}  onClick={()=>{setAuthMode("login"); setAuthErr("");}}>Log in</button>
+                  <button style={A.tabBtn(authMode==="signup")} onClick={()=>{setAuthMode("signup");setAuthErr("");}}>Sign up</button>
                 </div>
-
-                {/* Fields */}
-                {authMode === "signup" && (
-                  <div style={aStyles.fieldWrap}>
-                    <label style={aStyles.label}>Your name</label>
-                    <input style={aStyles.input} placeholder="Alex" value={authName}
-                      onChange={e => setAuthName(e.target.value)} />
+                {authMode==="signup"&&(
+                  <div style={A.field}>
+                    <label style={A.label}>Your name</label>
+                    <input style={A.inp} placeholder="Alex" value={authName} onChange={e=>setAuthName(e.target.value)}/>
                   </div>
                 )}
-                <div style={aStyles.fieldWrap}>
-                  <label style={aStyles.label}>Email</label>
-                  <input style={aStyles.input} type="email" placeholder="you@email.com" value={authEmail}
-                    onChange={e => setAuthEmail(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && handleAuth()} />
+                <div style={A.field}>
+                  <label style={A.label}>Email</label>
+                  <input style={A.inp} type="email" placeholder="you@email.com" value={authEmail}
+                    onChange={e=>setAuthEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doAuth()}/>
                 </div>
-                <div style={{ ...aStyles.fieldWrap, marginBottom: 18 }}>
-                  <label style={aStyles.label}>Password</label>
-                  <div style={{ position: "relative" }}>
-                    <input style={{ ...aStyles.input, paddingRight: 48 }}
-                      type={showPassword ? "text" : "password"}
-                      placeholder="••••••••" value={authPassword}
-                      onChange={e => setAuthPassword(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && handleAuth()} />
-                    <button
-                      onClick={() => setShowPassword(s => !s)}
-                      style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, lineHeight: 1, color: showPassword ? "#f59e0b" : "#3a3a5a", padding: 0 }}>
-                      {showPassword ? "🙈" : "👁"}
+                <div style={{...A.field,marginBottom:18}}>
+                  <label style={A.label}>Password</label>
+                  <div style={{position:"relative"}}>
+                    <input style={{...A.inp,paddingRight:48}} type={showPw?"text":"password"} placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;"
+                      value={authPass} onChange={e=>setAuthPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doAuth()}/>
+                    <button onClick={()=>setShowPw(v=>!v)}
+                      style={{position:"absolute",right:14,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:18,lineHeight:1,color:showPw?"#f59e0b":"#3a3a5a",padding:0}}>
+                      {showPw?"🙈":"👁"}
                     </button>
                   </div>
                 </div>
-
-                {/* Keep me signed in */}
-                <div style={aStyles.keepRow} onClick={() => setKeepSignedIn(k => !k)}>
-                  <div style={aStyles.checkbox(keepSignedIn)}>
-                    {keepSignedIn && <span style={{ fontSize: 13, fontWeight: 900, color: "#0d0d14" }}>✓</span>}
-                  </div>
-                  <span style={{ fontSize: 13, color: keepSignedIn ? "#fff" : "#4a4a6a", userSelect: "none" }}>Keep me signed in</span>
+                <div style={A.keepRow} onClick={()=>setKeepIn(v=>!v)}>
+                  <div style={A.chk(keepIn)}>{keepIn&&<span style={{fontSize:13,fontWeight:900,color:"#0d0d14"}}>✓</span>}</div>
+                  <span style={{fontSize:13,color:keepIn?"#fff":"#4a4a6a",userSelect:"none"}}>Keep me signed in</span>
                 </div>
-
-                {/* Error */}
-                <div style={aStyles.error}>{authError}</div>
-
-                {/* Submit */}
-                <button style={{ ...aStyles.submitBtn, opacity: authLoading ? 0.6 : 1 }} onClick={handleAuth} disabled={authLoading}>
-                  {authLoading ? "Please wait..." : authMode === "login" ? "Log in" : "Create account"}
+                <div style={A.error}>{authErr}</div>
+                <button style={{...A.submit,opacity:authLoading?0.6:1}} onClick={doAuth} disabled={authLoading}>
+                  {authLoading?"Please wait...":authMode==="login"?"Log in":"Create account"}
                 </button>
-
-                {/* Divider */}
-                <div style={aStyles.divider}>
-                  <div style={aStyles.divLine} />
-                  <span style={aStyles.divText}>OR</span>
-                  <div style={aStyles.divLine} />
-                </div>
-
-                {/* Continue as guest */}
-                <button style={{ ...aStyles.submitBtn, background: "#13131f", color: "#9090aa", border: "1px solid #1e1e2e", marginBottom: 20 }}
-                  onClick={() => { setCurrentUser({ name: "Guest", email: "", id: null }); setAuthed(true); }}>
+                <div style={A.divRow}><div style={A.divLine}/><span style={A.divTxt}>OR</span><div style={A.divLine}/></div>
+                <button style={{...A.submit,background:"#13131f",color:"#9090aa",border:"1px solid #1e1e2e",marginBottom:20}}
+                  onClick={()=>{setUser({name:"Guest",email:"",id:null});setAuthed(true);}}>
                   Continue as guest
                 </button>
-
-                {/* Switch mode */}
-                <div style={aStyles.switchTxt}>
-                  {authMode === "login" ? (
-                    <>Don't have an account? <button style={aStyles.switchLink} onClick={() => { setAuthMode("signup"); setAuthError(""); }}>Sign up free</button></>
-                  ) : (
-                    <>Already have an account? <button style={aStyles.switchLink} onClick={() => { setAuthMode("login"); setAuthError(""); }}>Log in</button></>
-                  )}
+                <div style={A.swTxt}>
+                  {authMode==="login"
+                    ?<span>No account? <button style={A.swLink} onClick={()=>{setAuthMode("signup");setAuthErr("");}}>Sign up free</button></span>
+                    :<span>Have an account? <button style={A.swLink} onClick={()=>{setAuthMode("login");setAuthErr("");}}>Log in</button></span>
+                  }
                 </div>
               </>
             )}
@@ -804,565 +351,346 @@ export default function FreeTime() {
 
   return (
     <>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-      <div style={styles.root}>
-        <div style={styles.app}>
-
-          {/* Header */}
-          <div style={styles.header}>
-            <div style={styles.logo}>FreeTime</div>
-            <div style={styles.greeting}>
-              {isCurrentWeek ? `${todayGreeting()}, ${currentUser?.name?.split(" ")[0] || ""}` : weekOffset < 0 ? "Past week" : "Upcoming week"}
-            </div>
-            <div style={styles.subGreeting}>{weekLabel}</div>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+      <div style={S.root}>
+        <div style={S.app}>
+          <div style={S.header}>
+            <div style={S.logo}>FreeTime</div>
+            <div style={S.greeting}>{isCurWeek?`${greet()}, ${user?.name?.split(" ")[0]||""}`:weekOff<0?"Past week":"Upcoming week"}</div>
+            <div style={S.sub}>{wkLbl}</div>
           </div>
-
-          {/* Week nav + day strip */}
-          <div style={styles.weekNav}>
-            <button style={styles.navBtn} onClick={() => setWeekOffset(w => w - 1)}>‹</button>
-            <span style={styles.weekLabel}>{isCurrentWeek ? "This week" : weekOffset < 0 ? `${Math.abs(weekOffset)}w ago` : `In ${weekOffset}w`}</span>
-            <button style={styles.navBtn} onClick={() => setWeekOffset(w => w + 1)}>›</button>
+          <div style={S.weekNav}>
+            <button style={S.navBtn} onClick={()=>setWeekOff(w=>w-1)}>&#8249;</button>
+            <span style={S.weekLbl}>{isCurWeek?"This week":weekOff<0?`${Math.abs(weekOff)}w ago`:`In ${weekOff}w`}</span>
+            <button style={S.navBtn} onClick={()=>setWeekOff(w=>w+1)}>&#8250;</button>
           </div>
-
-          <div style={styles.dayStrip}>
-            {weekDays.map((day, i) => {
-              const ds = day.toISOString().split("T")[0];
-              const isToday = isSameDay(day, today);
-              const isSelected = isSameDay(day, selectedDay);
-              const hasShift = shifts.some(s => s.date === ds);
-              return (
-                <div key={i} style={styles.dayPill(isToday, isSelected, hasShift)}
-                  onClick={() => { setSelectedDay(day); setTab("home"); }}>
-                  <span style={styles.dayName(isSelected)}>{DAYS[i]}</span>
-                  <span style={styles.dayNum(isSelected, hasShift)}>{day.getDate()}</span>
-                  <div style={styles.shiftDot(isSelected, hasShift)} />
+          <div style={S.strip}>
+            {wDays.map((day,i)=>{
+              const ds=day.toISOString().split("T")[0];
+              const isTod=sameDay(day,today),isSel=sameDay(day,selDay),hasSh=shifts.some(s=>s.date===ds);
+              return(
+                <div key={i} style={S.pill(isSel,isTod)} onClick={()=>{setSelDay(day);setTab("home");}}>
+                  <span style={S.pillName(isSel)}>{DAYS[i]}</span>
+                  <span style={S.pillNum(isSel)}>{day.getDate()}</span>
+                  <div style={S.dot(isSel,hasSh)}/>
                 </div>
               );
             })}
           </div>
+          <div style={S.body}>
 
-          {/* Body */}
-          <div style={styles.body}>
-
-            {tab === "home" && (
+            {tab==="home"&&(
               <>
-                {/* Selected day */}
                 <div>
-                  <div style={styles.sectionLabel}>{isSameDay(selectedDay, today) ? "Today" : FULL_DAYS[selectedDay.getDay()]} · {MONTHS[selectedDay.getMonth()]} {selectedDay.getDate()}</div>
-                  <div style={styles.card}>
-                    {dayShifts.length === 0 ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "4px 0" }}>
-                        <div style={{ ...styles.shiftIcon, background: "rgba(16,185,129,0.1)" }}>🌿</div>
-                        <div style={styles.shiftInfo}>
-                          <div style={{ ...styles.shiftTitle, color: "#10b981" }}>Free day</div>
-                          <div style={styles.shiftTime}>No shifts scheduled</div>
+                  <div style={S.secLbl}>{sameDay(selDay,today)?"Today":FULL_DAYS[selDay.getDay()]} &#xB7; {MONTHS[selDay.getMonth()]} {selDay.getDate()}</div>
+                  <div style={S.card}>
+                    {daySh.length===0?(
+                      <div style={{display:"flex",alignItems:"center",gap:12,padding:"4px 0"}}>
+                        <div style={{width:38,height:38,borderRadius:10,background:"rgba(16,185,129,.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>🌿</div>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:14,fontWeight:600,color:"#10b981",marginBottom:2}}>Free day</div>
+                          <div style={{fontSize:12,color:"#6b6b8a"}}>No shifts scheduled</div>
                         </div>
-                        <span style={{ ...styles.shiftBadge, color: "#10b981", background: "rgba(16,185,129,0.12)" }}>Open</span>
+                        <span style={{fontSize:11,fontWeight:700,color:"#10b981",background:"rgba(16,185,129,.12)",borderRadius:20,padding:"3px 10px"}}>Open</span>
                       </div>
-                    ) : (
-                      dayShifts.map((shift, idx) => {
-                        const [sh, sm] = shift.startTime.split(":").map(Number);
-                        const [eh, em] = shift.endTime.split(":").map(Number);
-                        return (
-                          <div key={shift.id} style={{ ...styles.shiftRow, borderBottom: idx < dayShifts.length - 1 ? "1px solid #1a1a2a" : "none" }}>
-                            <div style={styles.shiftIcon}>💼</div>
-                            <div style={styles.shiftInfo}>
-                              <div style={styles.shiftTitle}>{shift.label}</div>
-                              <div style={styles.shiftTime}>
-                                {fmt12(sh, sm)} – {fmt12(eh, em)}
-                                {(shift.travelMins ?? 0) > 0 && <span style={{ color: "#4a4a6a", marginLeft: 6 }}>🚗 {shift.travelMins}m travel</span>}
-                              </div>
-                            </div>
-                            <span style={styles.shiftBadge}>{shiftHours(shift)}h</span>
-                            <button style={styles.editBtn} onClick={() => openEditShift(shift)}>✎</button>
-                            <button style={styles.deleteBtn} onClick={() => setShowDeleteConfirm(shift.id)}>×</button>
+                    ):daySh.map((sh,idx)=>{
+                      const[shh,shm]=sh.startTime.split(":").map(Number),[ehh,ehm]=sh.endTime.split(":").map(Number);
+                      return(
+                        <div key={sh.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:idx<daySh.length-1?"1px solid #1a1a2a":"none"}}>
+                          <div style={{width:38,height:38,borderRadius:10,background:"#1e1e2e",display:"flex",alignItems:"center",justifyContent:"center",fontSize:17}}>💼</div>
+                          <div style={{flex:1}}>
+                            <div style={{fontSize:14,fontWeight:600,color:"#fff",marginBottom:2}}>{sh.label}</div>
+                            <div style={{fontSize:12,color:"#6b6b8a"}}>{fmt12(shh,shm)} &#8211; {fmt12(ehh,ehm)}{(sh.travelMins??0)>0&&<span style={{color:"#4a4a6a",marginLeft:6}}>🚗 {sh.travelMins}m</span>}</div>
                           </div>
-                        );
-                      })
-                    )}
+                          <span style={S.badge}>{shiftHrs(sh)}h</span>
+                          <button style={S.editBtn} onClick={()=>openEditSh(sh)}>&#9998;</button>
+                          <button style={S.delBtn}  onClick={()=>setDelShId(sh.id)}>&#215;</button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-
                 <div>
-                  <div style={styles.sectionLabel}>Week overview</div>
-                  <div style={styles.statGrid}>
-                    <div style={styles.statCard}>
-                      <div style={styles.statNum}>{freeDays}</div>
-                      <div style={styles.statLabel}>Free days</div>
-                      <div style={styles.barTrack}><div style={styles.barFill((freeDays / 7) * 100, "#10b981")} /></div>
-                    </div>
-                    <div style={styles.statCard}>
-                      <div style={styles.statNum}>{workDays.size}</div>
-                      <div style={styles.statLabel}>Work days</div>
-                      <div style={styles.barTrack}><div style={styles.barFill((workDays.size / 7) * 100, "#f59e0b")} /></div>
-                    </div>
-                    <div style={styles.statCard}>
-                      <div style={{ ...styles.statNum, fontSize: 22 }}>{totalWorkHours}h</div>
-                      <div style={styles.statLabel}>Work hours</div>
-                      <div style={styles.barTrack}><div style={styles.barFill((totalWorkHours / (7 * wakingHours)) * 100, "#f59e0b")} /></div>
-                    </div>
-                    <div style={styles.statCard}>
-                      <div style={{ ...styles.statNum, fontSize: 22 }}>{totalPriorityHours}h</div>
-                      <div style={styles.statLabel}>Priority hours</div>
-                      <div style={styles.barTrack}><div style={styles.barFill((totalPriorityHours / (7 * wakingHours)) * 100, "#6366f1")} /></div>
-                    </div>
+                  <div style={S.secLbl}>Week overview</div>
+                  <div style={S.statGrid}>
+                    {[[freeDays,"Free days","#10b981",freeDays/7],[workDays.size,"Work days","#f59e0b",workDays.size/7],[totWorkH+"h","Work hours","#f59e0b",totWorkH/(7*wakingH)],[totPriH+"h","Priority hrs","#6366f1",totPriH/(7*wakingH)]].map(([val,lbl,col,pct])=>(
+                      <div key={lbl} style={S.statCard}>
+                        <div style={{fontSize:typeof val==="number"?28:22,fontWeight:700,color:"#fff",lineHeight:1}}>{val}</div>
+                        <div style={{fontSize:12,color:"#6b6b8a",marginTop:4}}>{lbl}</div>
+                        <div style={S.track}><div style={S.fill(pct*100,col)}/></div>
+                      </div>
+                    ))}
                   </div>
-
-                  {/* True free time */}
-                  <div style={{ ...styles.card, marginTop: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{...S.card,marginTop:10}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                       <div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>True free time</div>
-                        <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 2 }}>After work & priorities</div>
+                        <div style={{fontSize:14,fontWeight:600,color:"#fff"}}>True free time</div>
+                        <div style={{fontSize:11,color:"#4a4a6a",marginTop:2}}>After work, travel &#38; priorities</div>
                       </div>
-                      <div style={{ fontSize: 28, fontWeight: 700, color: "#10b981" }}>{totalFreeHours}h</div>
+                      <div style={{fontSize:28,fontWeight:700,color:"#10b981"}}>{trueFree}h</div>
                     </div>
-                    <div style={styles.barTrack}>
-                      <div style={{ display: "flex", height: "100%", borderRadius: 20, overflow: "hidden" }}>
-                        <div style={{ width: `${(totalWorkHours / (7 * wakingHours)) * 100}%`, background: "#f59e0b", transition: "width 0.4s" }} />
-                        <div style={{ width: `${(totalPriorityHours / (7 * wakingHours)) * 100}%`, background: "#6366f1", transition: "width 0.4s" }} />
-                        <div style={{ flex: 1, background: "#10b981", transition: "width 0.4s" }} />
+                    <div style={S.track}>
+                      <div style={{display:"flex",height:"100%",borderRadius:20,overflow:"hidden"}}>
+                        <div style={{width:`${(totWorkH/(7*wakingH))*100}%`,background:"#f59e0b",transition:"width .4s"}}/>
+                        <div style={{width:`${(totPriH/(7*wakingH))*100}%`,background:"#6366f1",transition:"width .4s"}}/>
+                        <div style={{flex:1,background:"#10b981"}}/>
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
-                      {[["#f59e0b","Work"],["#6366f1","Priorities"],["#10b981","Free"]].map(([color, label]) => (
-                        <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: color }} />
-                          <span style={{ fontSize: 11, color: "#4a4a6a" }}>{label}</span>
+                    <div style={{display:"flex",gap:12,marginTop:8}}>
+                      {[["#f59e0b","Work"],["#6366f1","Priorities"],["#10b981","Free"]].map(([col,lbl])=>(
+                        <div key={lbl} style={{display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{width:8,height:8,borderRadius:"50%",background:col}}/>
+                          <span style={{fontSize:11,color:"#4a4a6a"}}>{lbl}</span>
                         </div>
                       ))}
                     </div>
                   </div>
                 </div>
-
-                {/* Day priorities */}
-                {priorities.length > 0 && (
+                {pris.length>0&&(
                   <div>
-                    <div style={styles.sectionLabel}>
-                      {isSameDay(selectedDay, today) ? "Today's" : FULL_DAYS[selectedDay.getDay()] + "'s"} priorities
-                    </div>
-                    {dayPriorities.length === 0 ? (
-                      <div style={{ ...styles.card, textAlign: "center", color: "#3a3a5a", fontSize: 13, padding: "20px" }}>
-                        No priorities scheduled — enjoy the free time
-                      </div>
-                    ) : (
-                      <div style={styles.card}>
-                        {dayPriorities.map((p, i) => (
-                          <div key={p.id} style={{ ...styles.priorityRow, borderBottom: i < dayPriorities.length - 1 ? "1px solid #1a1a2a" : "none" }}>
-                            <div style={{ width: 4, borderRadius: 4, alignSelf: "stretch", background: p.color, flexShrink: 0 }} />
-                            <div style={{ flex: 1, marginLeft: 4 }}>
-                              <div style={styles.priorityName}>{p.name}</div>
-                              <div style={{ fontSize: 12, color: "#4a4a6a", marginTop: 2 }}>
-                                {p.duration < 1 ? `${Math.round(p.duration * 60)}m` : `${p.duration}h`} dedicated{(p.travelMins ?? 0) > 0 ? ` · 🚗 ${p.travelMins}m travel` : ""}
-                              </div>
+                    <div style={S.secLbl}>{sameDay(selDay,today)?"Today":FULL_DAYS[selDay.getDay()]+"&#39;s"} priorities</div>
+                    {dayP.length===0
+                      ?<div style={{...S.card,textAlign:"center",color:"#3a3a5a",fontSize:13,padding:"20px"}}>No priorities scheduled</div>
+                      :<div style={S.card}>
+                        {dayP.map((p,i)=>(
+                          <div key={p.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:i<dayP.length-1?"1px solid #1a1a2a":"none"}}>
+                            <div style={{width:4,borderRadius:4,alignSelf:"stretch",background:p.color,flexShrink:0}}/>
+                            <div style={{flex:1,marginLeft:4}}>
+                              <div style={{fontSize:14,color:"#fff",fontWeight:500}}>{p.name}</div>
+                              <div style={{fontSize:12,color:"#4a4a6a",marginTop:2}}>{fmtDur(p.duration??1)} dedicated{(p.travelMins??0)>0?` · 🚗 ${p.travelMins}m`:""}</div>
                             </div>
-                            <span style={{ fontSize: 11, fontWeight: 700, color: p.color, background: `${p.color}18`, borderRadius: 20, padding: "3px 10px" }}>
-                              {p.duration ?? 1}h
-                            </span>
+                            <span style={{fontSize:11,fontWeight:700,color:p.color,background:`${p.color}18`,borderRadius:20,padding:"3px 10px"}}>{fmtDur(p.duration??1)}</span>
                           </div>
                         ))}
                       </div>
-                    )}
+                    }
                   </div>
                 )}
-
-                <button style={styles.addBtn} onClick={() => { setNewShift(s => ({ ...s, date: selectedDateStr })); setShowAddShift(true); }}>
-                  + Add shift
-                </button>
+                <button style={S.addBtn} onClick={()=>{setNewSh(s=>({...s,date:selDs}));setEditShId(null);setShowAddSh(true);}}>+ Add shift</button>
               </>
             )}
 
-            {tab === "week" && (
+            {tab==="week"&&(
               <>
-                <div style={styles.sectionLabel}>Week at a glance</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {weekDays.map((day) => {
-                    const ds = day.toISOString().split("T")[0];
-                    const dayShiftsForDay = shifts.filter(s => s.date === ds);
-                    const isWork = dayShiftsForDay.length > 0;
-                    const isToday = isSameDay(day, today);
-                    const dayAbbr = DAYS[day.getDay()];
-                    const dayPrioritiesForDay = priorities.filter(p => p.days.length === 0 || p.days.includes(dayAbbr));
-                    const totalHrs = dayShiftsForDay.reduce((a, s) => a + shiftHours(s), 0);
-                    return (
-                      <div key={ds}
-                        onClick={() => { setSelectedDay(day); setTab("home"); }}
-                        style={{
-                          display: "flex", alignItems: "center", gap: 12,
-                          padding: "10px 14px",
-                          borderRadius: 13,
-                          cursor: "pointer",
-                          background: isToday ? "#1e1e2e" : "#13131f",
-                          border: isToday ? "1px solid #2a2a4a" : "1px solid #1a1a2a",
-                        }}>
-                        {/* Day label */}
-                        <div style={{ width: 36, flexShrink: 0 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: isWork ? "#f59e0b" : "#10b981", letterSpacing: "0.04em" }}>
-                            {DAYS[day.getDay()].toUpperCase()}
-                          </div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: isToday ? "#fff" : "#6b6b8a" }}>
-                            {day.getDate()}
-                          </div>
+                <div style={S.secLbl}>Week at a glance</div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {wDays.map(day=>{
+                    const ds=day.toISOString().split("T")[0];
+                    const daySh2=shifts.filter(s=>s.date===ds),isWork=daySh2.length>0,isTod=sameDay(day,today);
+                    const abbr=DAYS[day.getDay()],dayP2=pris.filter(p=>p.days.length===0||p.days.includes(abbr));
+                    const totH2=daySh2.reduce((a,s)=>a+shiftHrs(s),0);
+                    return(
+                      <div key={ds} onClick={()=>{setSelDay(day);setTab("home");}}
+                        style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",borderRadius:13,cursor:"pointer",background:isTod?"#1e1e2e":"#13131f",border:isTod?"1px solid #2a2a4a":"1px solid #1a1a2a"}}>
+                        <div style={{width:36,flexShrink:0}}>
+                          <div style={{fontSize:11,fontWeight:700,color:isWork?"#f59e0b":"#10b981",letterSpacing:"0.04em"}}>{DAYS[day.getDay()].toUpperCase()}</div>
+                          <div style={{fontSize:13,fontWeight:600,color:isTod?"#fff":"#6b6b8a"}}>{day.getDate()}</div>
                         </div>
-
-                        {/* Icon */}
-                        <span style={{ fontSize: 18, flexShrink: 0 }}>{isWork ? "💼" : "🌿"}</span>
-
-                        {/* Middle info */}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          {isWork ? (
-                            <div>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {dayShiftsForDay.map(s => {
-                                  const [sh, sm] = s.startTime.split(":").map(Number);
-                                  const [eh, em] = s.endTime.split(":").map(Number);
-                                  return `${fmt12(sh, sm)}–${fmt12(eh, em)}`;
-                                }).join(", ")}
-                              </div>
-                              {dayPrioritiesForDay.length > 0 && (
-                                <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                  {dayPrioritiesForDay.map(p => p.name).join(" · ")}
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: "#10b981" }}>Day off</div>
-                              {dayPrioritiesForDay.length > 0 && (
-                                <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                  {dayPrioritiesForDay.map(p => p.name).join(" · ")}
-                                </div>
-                              )}
-                            </div>
-                          )}
+                        <span style={{fontSize:18,flexShrink:0}}>{isWork?"💼":"🌿"}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:13,fontWeight:600,color:isWork?"#fff":"#10b981",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                            {isWork?daySh2.map(s=>{const[sh,sm]=s.startTime.split(":").map(Number),[eh,em]=s.endTime.split(":").map(Number);return`${fmt12(sh,sm)}–${fmt12(eh,em)}`;}).join(", "):"Day off"}
+                          </div>
+                          {dayP2.length>0&&<div style={{fontSize:11,color:"#4a4a6a",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{dayP2.map(p=>p.name).join(" · ")}</div>}
                         </div>
-
-                        {/* Right badge */}
-                        {isWork ? (
-                          <span style={{ ...styles.shiftBadge, flexShrink: 0 }}>{totalHrs}h</span>
-                        ) : (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: "#10b981", background: "rgba(16,185,129,0.1)", borderRadius: 20, padding: "3px 10px", flexShrink: 0 }}>Free</span>
-                        )}
-
-                        {/* Add shift shortcut */}
-                        <button style={{ ...styles.editBtn, flexShrink: 0, fontSize: 16, color: "#2a2a4a" }}
-                          onClick={e => { e.stopPropagation(); setSelectedDay(day); setNewShift(s => ({ ...s, date: ds })); setShowAddShift(true); }}>
-                          +
-                        </button>
+                        {isWork?<span style={S.badge}>{totH2}h</span>:<span style={{fontSize:11,fontWeight:700,color:"#10b981",background:"rgba(16,185,129,.1)",borderRadius:20,padding:"3px 10px"}}>Free</span>}
+                        <button style={{background:"transparent",border:"none",color:"#2a2a4a",cursor:"pointer",fontSize:16,padding:"4px 6px"}}
+                          onClick={e=>{e.stopPropagation();setSelDay(day);setNewSh(s=>({...s,date:ds}));setEditShId(null);setShowAddSh(true);}}>+</button>
                       </div>
                     );
                   })}
                 </div>
-
-                {/* Compact summary */}
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                  <div style={{ flex: 1, background: "#13131f", border: "1px solid #1a1a2a", borderRadius: 12, padding: "10px 14px", textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: "#f59e0b" }}>{totalWorkHours}h</div>
-                    <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 2 }}>work</div>
-                  </div>
-                  <div style={{ flex: 1, background: "#13131f", border: "1px solid #1a1a2a", borderRadius: 12, padding: "10px 14px", textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: "#6366f1" }}>{totalPriorityHours}h</div>
-                    <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 2 }}>priorities</div>
-                  </div>
-                  <div style={{ flex: 1, background: "#13131f", border: "1px solid #1a1a2a", borderRadius: 12, padding: "10px 14px", textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: "#10b981" }}>{totalFreeHours}h</div>
-                    <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 2 }}>free</div>
-                  </div>
+                <div style={{display:"flex",gap:8,marginTop:4}}>
+                  {[["#f59e0b",totWorkH+"h","work"],["#6366f1",totPriH+"h","priorities"],["#10b981",trueFree+"h","free"]].map(([col,val,lbl])=>(
+                    <div key={lbl} style={{flex:1,background:"#13131f",border:"1px solid #1a1a2a",borderRadius:12,padding:"10px 14px",textAlign:"center"}}>
+                      <div style={{fontSize:20,fontWeight:700,color:col}}>{val}</div>
+                      <div style={{fontSize:11,color:"#4a4a6a",marginTop:2}}>{lbl}</div>
+                    </div>
+                  ))}
                 </div>
               </>
             )}
 
-            {tab === "priorities" && (
+            {tab==="priorities"&&(
               <>
-                <div style={styles.sectionLabel}>My priorities</div>
-                {priorities.length === 0 ? (
-                  <div style={{ ...styles.card, ...styles.emptyState }}>No priorities yet — add one below</div>
-                ) : (
-                  <div style={styles.card}>
-                    {priorities.map((p, i) => (
-                      <div key={p.id} style={{ ...styles.priorityRow, borderBottom: i < priorities.length - 1 ? "1px solid #1a1a2a" : "none" }}>
-                        <div style={{ width: 4, borderRadius: 4, alignSelf: "stretch", background: p.color, flexShrink: 0 }} />
-                        <div style={{ flex: 1, marginLeft: 4 }}>
-                          <div style={styles.priorityName}>{p.name}</div>
-                          <div style={{ fontSize: 11, color: "#4a4a6a", marginTop: 2 }}>
-                            {p.days.length > 0 ? p.days.join(" · ") : "Every day"} · {p.duration < 1 ? `${Math.round(p.duration * 60)}m` : `${p.duration}h`}{(p.travelMins ?? 0) > 0 ? ` · 🚗 ${p.travelMins}m` : ""}
-                          </div>
+                <div style={S.secLbl}>My priorities</div>
+                {pris.length===0?<div style={{...S.card,textAlign:"center",padding:"32px 0",color:"#3a3a5a",fontSize:14}}>No priorities yet</div>:(
+                  <div style={S.card}>
+                    {pris.map((p,i)=>(
+                      <div key={p.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:i<pris.length-1?"1px solid #1a1a2a":"none"}}>
+                        <div style={{width:4,borderRadius:4,alignSelf:"stretch",background:p.color,flexShrink:0}}/>
+                        <div style={{flex:1,marginLeft:4}}>
+                          <div style={{fontSize:14,color:"#fff",fontWeight:500}}>{p.name}</div>
+                          <div style={{fontSize:11,color:"#4a4a6a",marginTop:2}}>{p.days.length>0?p.days.join(" · "):"Every day"} · {fmtDur(p.duration??1)}{(p.travelMins??0)>0?` · 🚗 ${p.travelMins}m`:""}</div>
                         </div>
-                        <button style={styles.editBtn} onClick={() => openEditPriority(p)}>✎</button>
-                        <button style={styles.deleteBtn} onClick={() => deletePriority(p.id)}>×</button>
+                        <button style={S.editBtn} onClick={()=>openEditP(p)}>&#9998;</button>
+                        <button style={S.delBtn}  onClick={()=>delP(p.id)}>&#215;</button>
                       </div>
                     ))}
                   </div>
                 )}
-                <button style={styles.addBtn} onClick={() => { setEditingPriorityId(null); setNewPriority({ name: "", color: "#f59e0b", days: [], duration: 1, travelMins: 0 }); setDurationUnit("hrs"); setShowAddPriority(true); }}>
-                  + Add priority
-                </button>
+                <button style={S.addBtn} onClick={()=>{setEditPId(null);setDurUnit("hrs");setNewP({name:"",color:"#f59e0b",days:[],duration:1,travelMins:0});setShowAddP(true);}}>+ Add priority</button>
               </>
             )}
 
-            {tab === "settings" && (
+            {tab==="settings"&&(
               <>
-                <div style={styles.sectionLabel}>Account</div>
-                <div style={styles.card}>
-                  <div style={{ ...styles.freeRow, borderBottom: "1px solid #1a1a2a", padding: "12px 0" }}>
-                    <span style={{ fontSize: 14, color: "#6b6b8a" }}>Name</span>
-                    <span style={{ fontSize: 13, color: "#fff", fontWeight: 500 }}>{currentUser?.name}</span>
+                <div style={S.secLbl}>Account</div>
+                <div style={S.card}>
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderBottom:"1px solid #1a1a2a"}}>
+                    <span style={{fontSize:14,color:"#6b6b8a"}}>Name</span>
+                    <span style={{fontSize:13,color:"#fff",fontWeight:500}}>{user?.name}</span>
                   </div>
-                  {currentUser?.email && (
-                    <div style={{ ...styles.freeRow, padding: "12px 0" }}>
-                      <span style={{ fontSize: 14, color: "#6b6b8a" }}>Email</span>
-                      <span style={{ fontSize: 13, color: "#fff", fontWeight: 500 }}>{currentUser.email}</span>
+                  {user?.email&&(
+                    <div style={{display:"flex",justifyContent:"space-between",padding:"12px 0"}}>
+                      <span style={{fontSize:14,color:"#6b6b8a"}}>Email</span>
+                      <span style={{fontSize:13,color:"#fff",fontWeight:500}}>{user.email}</span>
                     </div>
                   )}
                 </div>
-                <button style={{ ...styles.ghostBtn, color: "#ef4444", borderColor: "#2a1a1a" }}
-                  onClick={() => { setAuthed(false); setCurrentUser(null); setAuthEmail(""); setAuthPassword(""); setAuthName(""); setAuthError(""); }}>
-                  Sign out
-                </button>
-
-                <div style={styles.sectionLabel}>Sleep settings</div>
-                <div style={styles.card}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <button style={{...S.ghostBtn,color:"#ef4444",borderColor:"#2a1a1a"}} onClick={doSignOut}>Sign out</button>
+                <div style={S.secLbl}>Sleep settings</div>
+                <div style={S.card}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
                     <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Average sleep</div>
-                      <div style={{ fontSize: 12, color: "#6b6b8a", marginTop: 2 }}>Used to calculate your free time</div>
+                      <div style={{fontSize:14,fontWeight:600,color:"#fff"}}>Average sleep</div>
+                      <div style={{fontSize:12,color:"#6b6b8a",marginTop:2}}>Used to calculate free time</div>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <span style={{ fontSize: 26, fontWeight: 700, color: "#f59e0b" }}>{sleepHours}</span>
-                      <span style={{ fontSize: 13, color: "#6b6b8a", marginLeft: 4 }}>hrs</span>
-                    </div>
+                    <div><span style={{fontSize:26,fontWeight:700,color:"#f59e0b"}}>{sleepH}</span><span style={{fontSize:13,color:"#6b6b8a",marginLeft:4}}>hrs</span></div>
                   </div>
-                  <input type="range" min="4" max="12" step="0.5" value={sleepHours}
-                    onChange={e => setSleepHours(Number(e.target.value))}
-                    style={{ width: "100%", accentColor: "#f59e0b" }} />
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-                    <span style={{ fontSize: 11, color: "#3a3a5a" }}>4 hrs</span>
-                    <span style={{ fontSize: 11, color: "#3a3a5a" }}>12 hrs</span>
+                  <input type="range" min="4" max="12" step="0.5" value={sleepH} onChange={e=>setSleepH(Number(e.target.value))} style={{width:"100%",accentColor:"#f59e0b"}}/>
+                  <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
+                    <span style={{fontSize:11,color:"#3a3a5a"}}>4 hrs</span><span style={{fontSize:11,color:"#3a3a5a"}}>12 hrs</span>
                   </div>
-                  <div style={{ marginTop: 14, padding: "10px 12px", background: "#0d0d14", borderRadius: 10, display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 13, color: "#6b6b8a" }}>Waking hours/day</span>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "#10b981" }}>{24 - sleepHours} hrs</span>
+                  <div style={{marginTop:14,padding:"10px 12px",background:"#0d0d14",borderRadius:10,display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontSize:13,color:"#6b6b8a"}}>Waking hours/day</span>
+                    <span style={{fontSize:13,fontWeight:700,color:"#10b981"}}>{wakingH} hrs</span>
                   </div>
                 </div>
-
-                <div style={styles.sectionLabel}>About FreeTime</div>
-                <div style={styles.card}>
-                  {[
-                    ["Version", "0.1.0 — MVP"],
-                    ["Built for", "Shift workers"],
-                    ["Free time calc", `${24 - sleepHours} waking hrs/day`],
-                  ].map(([k, v]) => (
-                    <div key={k} style={{ ...styles.freeRow, borderBottom: "1px solid #1a1a2a", padding: "12px 0" }}>
-                      <span style={{ fontSize: 14, color: "#6b6b8a" }}>{k}</span>
-                      <span style={{ fontSize: 13, color: "#fff", fontWeight: 500 }}>{v}</span>
+                <div style={S.secLbl}>About</div>
+                <div style={S.card}>
+                  {[["Version","0.1.0"],["Built for","Shift workers"],["Shifts logged",shifts.length+""]].map(([k,v])=>(
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"12px 0",borderBottom:"1px solid #1a1a2a"}}>
+                      <span style={{fontSize:14,color:"#6b6b8a"}}>{k}</span>
+                      <span style={{fontSize:13,color:"#fff",fontWeight:500}}>{v}</span>
                     </div>
                   ))}
-                  <div style={{ ...styles.freeRow, padding: "12px 0" }}>
-                    <span style={{ fontSize: 14, color: "#6b6b8a" }}>Total shifts logged</span>
-                    <span style={{ fontSize: 13, color: "#f59e0b", fontWeight: 700 }}>{shifts.length}</span>
-                  </div>
                 </div>
-                <div style={{ ...styles.card, marginTop: 0 }}>
-                  <div style={{ fontSize: 13, color: "#4a4a6a", lineHeight: 1.7 }}>
-                    FreeTime helps shift workers see and protect their free time. Add your shifts each week, set your personal priorities, and let the app do the math on what your week actually looks like.
-                  </div>
-                </div>
-                <button style={{ ...styles.ghostBtn }} onClick={() => { setShifts([]); }}>
-                  Clear all shifts
-                </button>
+                <button style={S.ghostBtn} onClick={()=>setShifts([])}>Clear all shifts</button>
               </>
             )}
+
           </div>
 
-          {/* Tab bar */}
-          <div style={styles.tabBar}>
-            {[
-              { id: "home", icon: "⊡", label: "HOME" },
-              { id: "week", icon: "◫", label: "WEEK" },
-              { id: "priorities", icon: "◈", label: "FOCUS" },
-              { id: "settings", icon: "⊙", label: "MORE" },
-            ].map(t => (
-              <button key={t.id} style={styles.tabItem(tab === t.id)} onClick={() => setTab(t.id)}>
-                <span style={{ fontSize: 20, lineHeight: 1 }}>{t.icon}</span>
-                <span>{t.label}</span>
+          <div style={S.tabBar}>
+            {[["home","⊡","HOME"],["week","◫","WEEK"],["priorities","◈","FOCUS"],["settings","⊙","MORE"]].map(([id,icon,lbl])=>(
+              <button key={id} style={S.tabItem(tab===id)} onClick={()=>setTab(id)}>
+                <span style={{fontSize:20,lineHeight:1}}>{icon}</span><span>{lbl}</span>
               </button>
             ))}
           </div>
 
-          {/* Add Shift Modal */}
-          {showAddShift && (
-            <div style={styles.modal} onClick={e => { if (e.target === e.currentTarget) { setShowAddShift(false); setEditingShiftId(null); } }}>
-              <div style={styles.modalSheet}>
-                <div style={styles.modalTitle}>{editingShiftId ? "Edit shift" : "Add shift"}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <div>
-                    <label style={styles.fieldLabel}>Label</label>
-                    <input style={styles.input} value={newShift.label}
-                      onChange={e => setNewShift(s => ({ ...s, label: e.target.value }))}
-                      placeholder="Work, On-call, Training..." />
+          {showAddSh&&(
+            <div style={S.modal} onClick={e=>{if(e.target===e.currentTarget){setShowAddSh(false);setEditShId(null);}}}>
+              <div style={S.sheet}>
+                <div style={S.mTitle}>{editShId?"Edit shift":"Add shift"}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:16}}>
+                  <div><label style={S.fLbl}>Label</label><input style={S.inp} value={newSh.label} onChange={e=>setNewSh(s=>({...s,label:e.target.value}))} placeholder="Work, On-call..."/></div>
+                  <div><label style={S.fLbl}>Date</label><input type="date" style={S.inp} value={newSh.date} onChange={e=>setNewSh(s=>({...s,date:e.target.value}))}/></div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    <div><label style={S.fLbl}>Start</label><input type="time" style={S.inp} value={newSh.startTime} onChange={e=>setNewSh(s=>({...s,startTime:e.target.value}))}/></div>
+                    <div><label style={S.fLbl}>End</label><input type="time" style={S.inp} value={newSh.endTime} onChange={e=>setNewSh(s=>({...s,endTime:e.target.value}))}/></div>
                   </div>
                   <div>
-                    <label style={styles.fieldLabel}>Date</label>
-                    <input type="date" style={styles.input} value={newShift.date}
-                      onChange={e => setNewShift(s => ({ ...s, date: e.target.value }))} />
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <div>
-                      <label style={styles.fieldLabel}>Start time</label>
-                      <input type="time" style={styles.input} value={newShift.startTime}
-                        onChange={e => setNewShift(s => ({ ...s, startTime: e.target.value }))} />
-                    </div>
-                    <div>
-                      <label style={styles.fieldLabel}>End time</label>
-                      <input type="time" style={styles.input} value={newShift.endTime}
-                        onChange={e => setNewShift(s => ({ ...s, endTime: e.target.value }))} />
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                      <label style={styles.fieldLabel}>Round-trip travel time</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <input
-                          type="number" min="0" max="300" step="5"
-                          value={newShift.travelMins}
-                          onChange={e => {
-                            const v = Math.max(0, Math.min(300, Number(e.target.value) || 0));
-                            setNewShift(s => ({ ...s, travelMins: v }));
-                          }}
-                          style={{ ...styles.input, width: 60, textAlign: "center", padding: "5px 8px", fontSize: 14, fontWeight: 700, color: "#f59e0b" }}
-                        />
-                        <span style={{ fontSize: 12, color: "#4a4a6a" }}>min</span>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <label style={S.fLbl}>Round-trip travel</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" min="0" max="300" step="5" value={newSh.travelMins}
+                          onChange={e=>setNewSh(s=>({...s,travelMins:Math.max(0,Math.min(300,Number(e.target.value)||0))}))}
+                          style={{...S.inp,width:60,textAlign:"center",padding:"5px 8px",fontSize:14,fontWeight:700,color:"#f59e0b"}}/>
+                        <span style={{fontSize:12,color:"#4a4a6a"}}>min</span>
                       </div>
                     </div>
-                    <input type="range" min="0" max="120" step="5" value={Math.min(newShift.travelMins, 120)}
-                      onChange={e => setNewShift(s => ({ ...s, travelMins: Number(e.target.value) }))}
-                      style={{ width: "100%", accentColor: "#f59e0b" }} />
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                      <span style={{ fontSize: 11, color: "#3a3a5a" }}>None</span>
-                      <span style={{ fontSize: 11, color: "#3a3a5a" }}>2 hrs (type for more)</span>
-                    </div>
+                    <input type="range" min="0" max="120" step="5" value={Math.min(newSh.travelMins,120)}
+                      onChange={e=>setNewSh(s=>({...s,travelMins:Number(e.target.value)}))} style={{width:"100%",accentColor:"#f59e0b"}}/>
                   </div>
-                  <button style={styles.addBtn} onClick={addShift}>{editingShiftId ? "Save changes" : "Save shift"}</button>
-                  <button style={styles.ghostBtn} onClick={() => { setShowAddShift(false); setEditingShiftId(null); }}>Cancel</button>
+                  <button style={S.addBtn} onClick={saveSh}>{editShId?"Save changes":"Save shift"}</button>
+                  <button style={S.ghostBtn} onClick={()=>{setShowAddSh(false);setEditShId(null);}}>Cancel</button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Add / Edit Priority Modal */}
-          {showAddPriority && (
-            <div style={styles.modal} onClick={e => { if (e.target === e.currentTarget) { setShowAddPriority(false); setEditingPriorityId(null); } }}>
-              <div style={styles.modalSheet}>
-                <div style={styles.modalTitle}>{editingPriorityId ? "Edit priority" : "Add priority"}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {showAddP&&(
+            <div style={S.modal} onClick={e=>{if(e.target===e.currentTarget){setShowAddP(false);setEditPId(null);}}}>
+              <div style={S.sheet}>
+                <div style={S.mTitle}>{editPId?"Edit priority":"Add priority"}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:16}}>
+                  <div><label style={S.fLbl}>Name</label><input style={S.inp} value={newP.name} onChange={e=>setNewP(p=>({...p,name:e.target.value}))} placeholder="Gym, Reading..."/></div>
                   <div>
-                    <label style={styles.fieldLabel}>Name</label>
-                    <input style={styles.input} value={newPriority.name}
-                      onChange={e => setNewPriority(p => ({ ...p, name: e.target.value }))}
-                      placeholder="Gym, Reading, Family time..." />
-                  </div>
-                  <div>
-                    <label style={styles.fieldLabel}>Color</label>
-                    <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-                      {PRIORITY_COLORS.map(c => (
-                        <div key={c} style={styles.colorDot(c, newPriority.color === c)}
-                          onClick={() => setNewPriority(p => ({ ...p, color: c }))} />
-                      ))}
+                    <label style={S.fLbl}>Color</label>
+                    <div style={{display:"flex",gap:10,marginTop:4}}>
+                      {P_COLORS.map(c=><div key={c} style={S.colDot(c,newP.color===c)} onClick={()=>setNewP(p=>({...p,color:c}))}/>)}
                     </div>
                   </div>
                   <div>
-                    <label style={styles.fieldLabel}>Preferred days</label>
-                    <div style={{ display: "flex", gap: 5, marginTop: 4 }}>
-                      {DAYS.map(d => (
-                        <div key={d} style={styles.dayToggle(newPriority.days.includes(d))}
-                          onClick={() => togglePriorityDay(d)}>{d.slice(0,1)}</div>
-                      ))}
+                    <label style={S.fLbl}>Preferred days</label>
+                    <div style={{display:"flex",gap:5,marginTop:4}}>
+                      {DAYS.map(d=><div key={d} style={S.dayTog(newP.days.includes(d))} onClick={()=>togDay(d)}>{d[0]}</div>)}
                     </div>
-                    <div style={{ fontSize: 11, color: "#3a3a5a", marginTop: 6 }}>
-                      {newPriority.days.length === 0 ? "No days selected — will show every day" : `${newPriority.days.length} day${newPriority.days.length !== 1 ? "s" : ""} selected`}
-                    </div>
+                    <div style={{fontSize:11,color:"#3a3a5a",marginTop:6}}>{newP.days.length===0?"No days selected — shows every day":`${newP.days.length} day${newP.days.length!==1?"s":""} selected`}</div>
                   </div>
                   <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                      <label style={styles.fieldLabel}>Dedicated time per session</label>
-                      {/* Unit toggle */}
-                      <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid #2a2a3e" }}>
-                        {["hrs","mins"].map(u => (
-                          <button key={u} onClick={() => setDurationUnit(u)}
-                            style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, border: "none", cursor: "pointer",
-                              background: durationUnit === u ? newPriority.color : "#0d0d14",
-                              color: durationUnit === u ? "#0d0d14" : "#4a4a6a" }}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <label style={S.fLbl}>Time per session</label>
+                      <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:"1px solid #2a2a3e"}}>
+                        {["hrs","mins"].map(u=>(
+                          <button key={u} onClick={()=>setDurUnit(u)}
+                            style={{padding:"4px 10px",fontSize:11,fontWeight:700,border:"none",cursor:"pointer",background:durUnit===u?newP.color:"#0d0d14",color:durUnit===u?"#0d0d14":"#4a4a6a"}}>
                             {u}
                           </button>
                         ))}
                       </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <input
-                        type="number" min="0" step={durationUnit === "hrs" ? "0.5" : "5"}
-                        value={durationUnit === "hrs" ? newPriority.duration : Math.round(newPriority.duration * 60)}
-                        onChange={e => {
-                          const raw = Number(e.target.value) || 0;
-                          const inHrs = durationUnit === "hrs" ? Math.max(0, raw) : Math.max(0, raw) / 60;
-                          setNewPriority(p => ({ ...p, duration: Math.round(inHrs * 100) / 100 }));
-                        }}
-                        style={{ ...styles.input, flex: 1, textAlign: "center", padding: "8px", fontSize: 16, fontWeight: 700, color: newPriority.color }}
-                      />
-                      <span style={{ fontSize: 13, color: "#4a4a6a", flexShrink: 0 }}>{durationUnit}</span>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <input type="number" min="0" step={durUnit==="hrs"?0.5:5}
+                        value={durUnit==="hrs"?newP.duration:Math.round(newP.duration*60)}
+                        onChange={e=>{const raw=Number(e.target.value)||0;setNewP(p=>({...p,duration:Math.round((durUnit==="hrs"?Math.max(0,raw):Math.max(0,raw)/60)*100)/100}));}}
+                        style={{...S.inp,flex:1,textAlign:"center",padding:"8px",fontSize:16,fontWeight:700,color:newP.color}}/>
+                      <span style={{fontSize:13,color:"#4a4a6a",flexShrink:0}}>{durUnit}</span>
                     </div>
-                    <input type="range"
-                      min="0" max={durationUnit === "hrs" ? 12 : 720} step={durationUnit === "hrs" ? 0.5 : 5}
-                      value={durationUnit === "hrs" ? Math.min(newPriority.duration, 12) : Math.min(Math.round(newPriority.duration * 60), 720)}
-                      onChange={e => {
-                        const raw = Number(e.target.value);
-                        const inHrs = durationUnit === "hrs" ? raw : raw / 60;
-                        setNewPriority(p => ({ ...p, duration: Math.round(inHrs * 100) / 100 }));
-                      }}
-                      style={{ width: "100%", accentColor: newPriority.color, marginTop: 8 }} />
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                      <span style={{ fontSize: 11, color: "#3a3a5a" }}>0</span>
-                      <span style={{ fontSize: 11, color: "#3a3a5a" }}>{durationUnit === "hrs" ? "12 hrs" : "12 hrs"} (type for more)</span>
-                    </div>
+                    <input type="range" min="0" max={durUnit==="hrs"?12:720} step={durUnit==="hrs"?0.5:5}
+                      value={durUnit==="hrs"?Math.min(newP.duration,12):Math.min(Math.round(newP.duration*60),720)}
+                      onChange={e=>{const raw=Number(e.target.value);setNewP(p=>({...p,duration:Math.round((durUnit==="hrs"?raw:raw/60)*100)/100}));}}
+                      style={{width:"100%",accentColor:newP.color,marginTop:8}}/>
                   </div>
                   <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                      <label style={styles.fieldLabel}>Round-trip travel time</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        <input
-                          type="number" min="0" max="300" step="5"
-                          value={newPriority.travelMins}
-                          onChange={e => {
-                            const v = Math.max(0, Math.min(300, Number(e.target.value) || 0));
-                            setNewPriority(p => ({ ...p, travelMins: v }));
-                          }}
-                          style={{ ...styles.input, width: 60, textAlign: "center", padding: "5px 8px", fontSize: 14, fontWeight: 700, color: newPriority.color }}
-                        />
-                        <span style={{ fontSize: 12, color: "#4a4a6a" }}>min</span>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                      <label style={S.fLbl}>Round-trip travel</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" min="0" max="300" step="5" value={newP.travelMins}
+                          onChange={e=>setNewP(p=>({...p,travelMins:Math.max(0,Math.min(300,Number(e.target.value)||0))}))}
+                          style={{...S.inp,width:60,textAlign:"center",padding:"5px 8px",fontSize:14,fontWeight:700,color:newP.color}}/>
+                        <span style={{fontSize:12,color:"#4a4a6a"}}>min</span>
                       </div>
                     </div>
-                    <input type="range" min="0" max="120" step="5" value={Math.min(newPriority.travelMins, 120)}
-                      onChange={e => setNewPriority(p => ({ ...p, travelMins: Number(e.target.value) }))}
-                      style={{ width: "100%", accentColor: newPriority.color }} />
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                      <span style={{ fontSize: 11, color: "#3a3a5a" }}>None</span>
-                      <span style={{ fontSize: 11, color: "#3a3a5a" }}>2 hrs (type for more)</span>
-                    </div>
+                    <input type="range" min="0" max="120" step="5" value={Math.min(newP.travelMins,120)}
+                      onChange={e=>setNewP(p=>({...p,travelMins:Number(e.target.value)}))} style={{width:"100%",accentColor:newP.color}}/>
                   </div>
-                  <button style={styles.addBtn} onClick={addPriority}>{editingPriorityId ? "Save changes" : "Save priority"}</button>
-                  <button style={styles.ghostBtn} onClick={() => { setShowAddPriority(false); setEditingPriorityId(null); }}>Cancel</button>
+                  <button style={S.addBtn} onClick={saveP}>{editPId?"Save changes":"Save priority"}</button>
+                  <button style={S.ghostBtn} onClick={()=>{setShowAddP(false);setEditPId(null);}}>Cancel</button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Delete confirm */}
-          {showDeleteConfirm && (
-            <div style={styles.modal} onClick={e => { if (e.target === e.currentTarget) setShowDeleteConfirm(null); }}>
-              <div style={styles.modalSheet}>
-                <div style={styles.modalTitle}>Remove shift?</div>
-                <p style={{ color: "#6b6b8a", fontSize: 14, marginBottom: 20 }}>This shift will be removed from your schedule.</p>
-                <button style={{ ...styles.addBtn, background: "#ef4444", marginBottom: 10 }} onClick={() => deleteShift(showDeleteConfirm)}>Remove</button>
-                <button style={styles.ghostBtn} onClick={() => setShowDeleteConfirm(null)}>Cancel</button>
+          {delShId&&(
+            <div style={S.modal} onClick={e=>{if(e.target===e.currentTarget)setDelShId(null);}}>
+              <div style={S.sheet}>
+                <div style={S.mTitle}>Remove shift?</div>
+                <p style={{color:"#6b6b8a",fontSize:14,marginBottom:20}}>This shift will be removed from your schedule.</p>
+                <button style={{...S.addBtn,background:"#ef4444",marginBottom:10}} onClick={()=>delSh(delShId)}>Remove</button>
+                <button style={S.ghostBtn} onClick={()=>setDelShId(null)}>Cancel</button>
               </div>
             </div>
           )}
