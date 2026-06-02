@@ -7,8 +7,13 @@ const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 function getSupabase() {
   if (!SB_URL || !SB_KEY) return null;
   if (typeof window === "undefined" || !window.supabase) return null;
-  if (!window._sbClient) window._sbClient = window.supabase.createClient(SB_URL, SB_KEY);
-  return window._sbClient;
+  try {
+    if (!window._sbClient) window._sbClient = window.supabase.createClient(SB_URL, SB_KEY);
+    return window._sbClient;
+  } catch(e) {
+    console.error("Supabase init failed:", e.message);
+    return null;
+  }
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────
