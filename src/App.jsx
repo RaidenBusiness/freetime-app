@@ -160,9 +160,9 @@ export default function FreeTime() {
     (async()=>{
       try{
         const[sr,pr,st]=await Promise.all([
-          sbRest(`/rest/v1/shifts?user_id=eq.${user.id}&order=date.asc`),
-          sbRest(`/rest/v1/priorities?user_id=eq.${user.id}&order=sort_order.asc`),
-          sbRest(`/rest/v1/user_settings?user_id=eq.${user.id}`),
+          sbRest("/rest/v1/shifts?user_id=eq." + user.id + "&order=date.asc"),
+          sbRest("/rest/v1/priorities?user_id=eq." + user.id + "&order=sort_order.asc"),
+          sbRest("/rest/v1/user_settings?user_id=eq." + user.id),
         ]);
         if(Array.isArray(sr)&&sr.length) setShifts(sr.map(s=>({id:s.id,date:s.date,startTime:s.start_time,endTime:s.end_time,label:s.label,travelMins:s.travel_mins})));
         if(Array.isArray(pr)&&pr.length) setPris(pr.map(p=>({id:p.id,name:p.name,color:p.color,days:p.days,duration:p.duration,travelMins:p.travel_mins})));
@@ -191,7 +191,7 @@ export default function FreeTime() {
         if(error) throw error;
         const name=data.user?.user_metadata?.name||authEmail.split("@")[0];
         setUser({name,email:data.user.email,id:data.user.id});
-        const seenKey=`ft_onboarded_${data.user.id}`;
+        const seenKey = "ft_onboarded_" + data.user.id;
         if(!localStorage.getItem(seenKey)){
           setOnboarding(true);setOnboardStep(0);
         } else {
@@ -236,7 +236,7 @@ export default function FreeTime() {
   }
 
   async function delSh(id){
-    if(user?.id){try{await sbRest(`/rest/v1/shifts?id=eq.${id}`,{method:"DELETE"});}catch(e){console.error(e);}}
+    if(user && user.id){try{await sbRest("/rest/v1/shifts?id=eq." + id,{method:"DELETE"});}catch(e){console.error(e);}}
     setShifts(p=>p.filter(s=>s.id!==id));setDelShId(null);
   }
 
@@ -364,12 +364,14 @@ export default function FreeTime() {
 
   // ── Onboarding screen ─────────────────────────────────────────────────
   function finishOnboarding(){
-    if(user?.id) localStorage.setItem(`ft_onboarded_${user.id}`,"1");
-    setOnboarding(false);setAuthed(true);
+    if(user && user.id) localStorage.setItem("ft_onboarded_" + user.id, "1");
+    setOnboarding(false); setAuthed(true);
   }
+  const userName = user && user.name ? user.name.split(" ")[0] : "";
+  const STEPS = [
     {
       icon:"👋",
-      title:"Welcome, " + (user?.name?.split(" ")[0] || "") + "!",
+      title:"Welcome, " + userName + "!",
       sub:"Have you used FreeTime before?",
       isChoice: true,
     },
@@ -485,7 +487,7 @@ export default function FreeTime() {
         <div style={S.app}>
           <div style={S.header}>
             <div style={S.logo}>FreeTime</div>
-            <div style={S.greeting}>{isCurWeek?`${greet()}, ${user?.name?.split(" ")[0]||""}`:weekOff<0?"Past week":"Upcoming week"}</div>
+            <div style={S.greeting}>{isCurWeek ? (greet() + ", " + (user && user.name ? user.name.split(" ")[0] : "")) : weekOff<0 ? "Past week" : "Upcoming week"}</div>
             <div style={S.sub}>{wkLbl}</div>
           </div>
           <div style={S.weekNav}>
