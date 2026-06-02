@@ -116,8 +116,8 @@ export default function FreeTime() {
   const [tab,setTab]=useState("home");
   const [weekOff,setWeekOff]=useState(0);
   const [selDay,setSelDay]=useState(today);
-  const [shifts,setShifts]=useState(INIT_SHIFTS);
-  const [pris,setPris]=useState(INIT_PRIS);
+  const [shifts, setShifts] = useState([]);
+  const [pris,   setPris]   = useState([]);
   const [sleepH,setSleepH]=useState(8);
   const [showAddSh,setShowAddSh]=useState(false);
   const [editShId,setEditShId]=useState(null);
@@ -138,6 +138,8 @@ export default function FreeTime() {
   const [authLoading,setAuthLoading]=useState(false);
   const [signupDone,setSignupDone]=useState(false);
   const [user,setUser]=useState(null);
+  const [onboarding,setOnboarding]=useState(false);
+  const [onboardStep,setOnboardStep]=useState(0);
 
   useEffect(()=>{
     const sb=getSupabase(); if(!sb) return;
@@ -188,7 +190,13 @@ export default function FreeTime() {
         const{data,error}=await sb.auth.signInWithPassword({email:authEmail.trim(),password:authPass});
         if(error) throw error;
         const name=data.user?.user_metadata?.name||authEmail.split("@")[0];
-        setUser({name,email:data.user.email,id:data.user.id});setAuthed(true);
+        setUser({name,email:data.user.email,id:data.user.id});
+        const seenKey=`ft_onboarded_${data.user.id}`;
+        if(!localStorage.getItem(seenKey)){
+          setOnboarding(true);setOnboardStep(0);
+        } else {
+          setAuthed(true);
+        }
       }
     }catch(e){
       const m=(e.message||"").toLowerCase();
@@ -202,7 +210,7 @@ export default function FreeTime() {
 
   async function doSignOut(){
     const sb=getSupabase(); if(sb) await sb.auth.signOut().catch(()=>{});
-    setAuthed(false);setUser(null);setShifts(INIT_SHIFTS);setPris(INIT_PRIS);setSleepH(8);
+    setAuthed(false);setUser(null);setShifts([]);setPris([]);setSleepH(8);
     setAuthEmail("");setAuthPass("");setAuthName("");setAuthErr("");
   }
 
@@ -337,7 +345,7 @@ export default function FreeTime() {
                 </button>
                 <div style={A.divRow}><div style={A.divLine}/><span style={A.divTxt}>OR</span><div style={A.divLine}/></div>
                 <button style={{...A.submit,background:"#13131f",color:"#9090aa",border:"1px solid #1e1e2e",marginBottom:20}}
-                  onClick={()=>{setUser({name:"Guest",email:"",id:null});setAuthed(true);}}>
+                  onClick={()=>{setUser({name:"Guest",email:"",id:null});setShifts(INIT_SHIFTS);setPris(INIT_PRIS);setOnboarding(true);setOnboardStep(0);}}>
                   Continue as guest
                 </button>
                 <div style={A.swTxt}>
@@ -348,6 +356,122 @@ export default function FreeTime() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // ── Onboarding screen ─────────────────────────────────────────────────
+  function finishOnboarding(){
+    if(user?.id) localStorage.setItem(`ft_onboarded_${user.id}`,"1");
+    setOnboarding(false);setAuthed(true);
+  }
+    {
+      icon:"👋",
+      title:`Welcome, ${user?.name?.split(" ")[0]||""}!`,
+      sub:"Have you used FreeTime before?",
+      isChoice: true,
+    },
+    {
+      icon:"📅",
+      title:"Add your work shifts",
+      sub:"Tap any day in the strip or hit \"+ Add shift\" to log when you work. FreeTime tracks your hours automatically.",
+      tip:"You can edit or delete shifts anytime with the ✎ button.",
+    },
+    {
+      icon:"⭐",
+      title:"Set your priorities",
+      sub:"Head to the Focus tab to add things that matter to you — gym, reading, family time. Pick which days and how long each session is.",
+      tip:"Priorities are factored into your free time calculation.",
+    },
+    {
+      icon:"🧮",
+      title:"See your true free time",
+      sub:"The Home tab calculates exactly how much free time you have after work, sleep, travel, and priorities are all accounted for.",
+      tip:"Adjust your sleep hours in the More tab to fine-tune the calculation.",
+    },
+    {
+      icon:"📊",
+      title:"Check your week at a glance",
+      sub:"The Week tab shows all 7 days in one view — work days in amber, days off in green — with your priorities shown below each day.",
+      tip:"Tap any day to jump straight to it on the Home tab.",
+    },
+  ];
+
+  if(onboarding){
+    const step=STEPS[onboardStep];
+    const isLast=onboardStep===STEPS.length-1;
+    const progress=onboardStep>0?(onboardStep-1)/(STEPS.length-2)*100:0;
+    return(
+      <>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+        <div style={{minHeight:"100vh",background:"#0d0d14",display:"flex",justifyContent:"center",alignItems:"center",fontFamily:"'DM Sans',sans-serif"}}>
+          <div style={{width:"100%",maxWidth:390,padding:"0 24px 48px",display:"flex",flexDirection:"column",alignItems:"center"}}>
+
+            {/* Progress dots — only show after first screen */}
+            {onboardStep>0&&(
+              <div style={{display:"flex",gap:6,marginBottom:40}}>
+                {STEPS.slice(1).map((_,i)=>(
+                  <div key={i} style={{width:i===onboardStep-1?24:8,height:8,borderRadius:20,background:i===onboardStep-1?"#f59e0b":"#1e1e2e",transition:"all .3s"}}/>
+                ))}
+              </div>
+            )}
+            {onboardStep===0&&<div style={{height:48}}/>}
+
+            {/* Icon */}
+            <div style={{fontSize:72,marginBottom:24,lineHeight:1}}>{step.icon}</div>
+
+            {/* Title */}
+            <div style={{fontSize:24,fontWeight:700,color:"#fff",textAlign:"center",marginBottom:12,lineHeight:1.3}}>{step.title}</div>
+
+            {/* Sub */}
+            <div style={{fontSize:15,color:"#6b6b8a",textAlign:"center",lineHeight:1.7,marginBottom:step.tip?16:40}}>{step.sub}</div>
+
+            {/* Tip */}
+            {step.tip&&(
+              <div style={{background:"#13131f",border:"1px solid #1e1e2e",borderRadius:14,padding:"12px 16px",marginBottom:40,width:"100%",boxSizing:"border-box"}}>
+                <span style={{fontSize:12,color:"#f59e0b",fontWeight:700}}>TIP  </span>
+                <span style={{fontSize:13,color:"#6b6b8a"}}>{step.tip}</span>
+              </div>
+            )}
+
+            {/* Choice buttons (first screen) */}
+            {step.isChoice?(
+              <div style={{display:"flex",flexDirection:"column",gap:12,width:"100%"}}>
+                <button
+                  style={{background:"#13131f",color:"#fff",border:"1px solid #1e1e2e",borderRadius:14,padding:"16px",fontSize:15,fontWeight:600,cursor:"pointer",width:"100%"}}
+                  onClick={()=>setOnboardStep(1)}>
+                  No — show me how it works
+                </button>
+                <button
+                  style={{background:"#f59e0b",color:"#0d0d14",border:"none",borderRadius:14,padding:"16px",fontSize:15,fontWeight:700,cursor:"pointer",width:"100%"}}
+                  onClick={()=>finishOnboarding()}>
+                  Yes — take me to the app
+                </button>
+              </div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:12,width:"100%"}}>
+                <button
+                  style={{background:"#f59e0b",color:"#0d0d14",border:"none",borderRadius:14,padding:"16px",fontSize:15,fontWeight:700,cursor:"pointer",width:"100%"}}
+                  onClick={()=>{ if(isLast) finishOnboarding(); else setOnboardStep(s=>s+1); }}>
+                  {isLast?"Let's go →":"Next →"}
+                </button>
+                {onboardStep>1&&(
+                  <button
+                    style={{background:"transparent",color:"#4a4a6a",border:"none",fontSize:13,cursor:"pointer",padding:"8px"}}
+                    onClick={()=>setOnboardStep(s=>s-1)}>
+                    ← Back
+                  </button>
+                )}
+                <button
+                  style={{background:"transparent",color:"#3a3a5a",border:"none",fontSize:13,cursor:"pointer",padding:"8px"}}
+                  onClick={()=>finishOnboarding()}>
+                  Skip tutorial
+                </button>
+              </div>
+            )}
+
           </div>
         </div>
       </>
